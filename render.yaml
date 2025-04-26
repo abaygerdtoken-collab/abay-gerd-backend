@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: abay-gerd-token-api
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: python main.py
+    envVars:
+      - key: WEB3_PROVIDER
+        value: your_web3_provider_url_here
+      - key: PRIVATE_KEY
+        value: your_private_key_here
+      - key: SENDER_ADDRESS
+        value: your_wallet_address_here
+      - key: TOKEN_CONTRACT_ADDRESS
+        value: your_token_contract_address_here
+      - key: TOKEN_DECIMALS
+        value: "2"
