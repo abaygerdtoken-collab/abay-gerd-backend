@@ -1,3 +1,5 @@
 Flask
 web3
 flask-cors
+requests
+firebase-admin
