@@ -99,7 +99,7 @@ def send_token():
         from google.cloud import firestore
         
         claim_data = {
-            'wallet': recipient,
+            'wallet_address': recipient,
             'ip': data.get('ip', ''),
             'country': data.get('country', ''),
             'city': data.get('city', ''),
@@ -113,7 +113,7 @@ def send_token():
     except Exception as e:
         # Save to Firestore - failed_data
         fail_data = {
-            'wallet': data.get('recipient', ''),
+            'wallet_address': data.get('recipient', ''),
             'ip': data.get('ip', ''),
             'country': data.get('country', ''),
             'city': data.get('city', ''),
