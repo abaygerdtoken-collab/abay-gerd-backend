@@ -18,16 +18,6 @@ TOKEN_DECIMALS = int(os.environ.get("TOKEN_DECIMALS", 2))
 SERVER_SECRET_KEY = os.environ.get("SERVER_SECRET_KEY")
 RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY")
 BSC_API_KEY = os.environ.get("BSC_API_KEY")
-FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID")
-FIREBASE_PRIVATE_KEY = os.environ.get("FIREBASE_PRIVATE_KEY").replace("\\n", "\n")
-FIREBASE_CLIENT_EMAIL = os.environ.get("FIREBASE_CLIENT_EMAIL")
-
-# Validate Environment Variables
-required_vars = [WEB3_PROVIDER, PRIVATE_KEY, SENDER_ADDRESS, TOKEN_CONTRACT_ADDRESS,
-                 SERVER_SECRET_KEY, RECAPTCHA_SECRET_KEY, BSC_API_KEY,
-                 FIREBASE_PROJECT_ID, FIREBASE_PRIVATE_KEY, FIREBASE_CLIENT_EMAIL]
-if not all(required_vars):
-    raise Exception("Missing one or more required environment variables!")
 
 # Setup Web3
 web3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER))
@@ -52,14 +42,8 @@ TOKEN_ABI = [
 ]
 token_contract = web3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 
-# Setup Firebase
-cred = credentials.Certificate({
-    "type": "service_account",
-    "project_id": FIREBASE_PROJECT_ID,
-    "private_key": FIREBASE_PRIVATE_KEY,
-    "client_email": FIREBASE_CLIENT_EMAIL,
-    "token_uri": "https://oauth2.googleapis.com/token"
-})
+# Setup Firebase (New Method - Secret File)
+cred = credentials.Certificate('/etc/secrets/abay-firebase.json')  # 👈 path where Render mounts your secret file
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
