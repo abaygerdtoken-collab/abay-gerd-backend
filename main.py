@@ -96,13 +96,15 @@ def send_token():
         tx_hash = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
         # Step 6: Save to Firestore - user_data
+        from google.cloud import firestore
+        
         claim_data = {
             'wallet': recipient,
             'ip': data.get('ip', ''),
             'country': data.get('country', ''),
             'city': data.get('city', ''),
-            'amount': amount,
-            'tx_hash': tx_hash.hex()
+            'token_amount': amount,
+            'claimed_at': firestore.SERVER_TIMESTAMP
         }
         db.collection('user_data').add(claim_data)
 
