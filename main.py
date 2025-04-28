@@ -22,7 +22,7 @@ BSC_API_KEY = os.environ.get("BSC_API_KEY")
 # Setup Web3
 web3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER))
 if not web3.is_connected():
-    raise Exception("Failed to connect to Web3 provider!")
+    raise Exception("Failed to connect to Web3 provider! Contact support at support@abaygerdtoken.com.")
 
 SENDER_ADDRESS = Web3.to_checksum_address(SENDER_ADDRESS)
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address(TOKEN_CONTRACT_ADDRESS)
@@ -82,7 +82,7 @@ def send_token():
         check_url = f"https://api.bscscan.com/api?module=account&action=tokentx&address={recipient}&contractaddress={TOKEN_CONTRACT_ADDRESS}&apikey={BSC_API_KEY}"
         check_result = requests.get(check_url).json()
         if check_result.get('result') and isinstance(check_result['result'], list) and len(check_result['result']) > 0:
-            return jsonify({'status': 'error', 'message': 'Wallet already claimed before.'}), 400
+            return jsonify({'status': 'error', 'message': 'This wallet address has previously claimed its share. Please request with another wallet address'}), 400
 
         # Step 5: Send Token Transaction
         nonce = web3.eth.get_transaction_count(SENDER_ADDRESS)
