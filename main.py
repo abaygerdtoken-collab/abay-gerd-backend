@@ -89,8 +89,8 @@ def send_token():
         tx = token_contract.functions.transfer(recipient, amount).build_transaction({
             'from': SENDER_ADDRESS,
             'nonce': nonce,
-            'gas': 100000,
-            'gasPrice': web3.to_wei('5', 'gwei')
+            'gas': 70000,
+            'gasPrice': web3.to_wei('1', 'gwei')
         })
         signed_tx = web3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
         tx_hash = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
