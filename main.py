@@ -18,7 +18,7 @@ SENDER_ADDRESS = os.environ.get("SENDER_ADDRESS")
 TOKEN_CONTRACT_ADDRESS = os.environ.get("TOKEN_CONTRACT_ADDRESS")
 TOKEN_DECIMALS = int(os.environ.get("TOKEN_DECIMALS", 2))
 RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY")
-BSC_API_KEY = os.environ.get("BSC_API_KEY")
+IPINFO_TOKEN = os.environ.get("IPINFO_TOKEN")
 
 web3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER))
 if not web3.is_connected():
@@ -27,15 +27,13 @@ if not web3.is_connected():
 SENDER_ADDRESS = Web3.to_checksum_address(SENDER_ADDRESS)
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address(TOKEN_CONTRACT_ADDRESS)
 
-TOKEN_ABI = [
-    {
-        "constant": False,
-        "inputs": [{"name": "_to", "type": "address"}, {"name": "_value", "type": "uint256"}],
-        "name": "transfer",
-        "outputs": [{"name": "", "type": "bool"}],
-        "type": "function"
-    }
-]
+TOKEN_ABI = [{
+    "constant": False,
+    "inputs": [{"name": "_to", "type": "address"}, {"name": "_value", "type": "uint256"}],
+    "name": "transfer",
+    "outputs": [{"name": "", "type": "bool"}],
+    "type": "function"
+}]
 token_contract = web3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 
 cred = credentials.Certificate('/etc/secrets/abay-firebase.json')
@@ -46,7 +44,7 @@ session_tokens = {}
 
 @app.route('/')
 def home():
-    return "Abay GERD Token API v2 is running."
+    return "Abay GERD Token API v3 is running."
 
 @app.route('/auth/session', methods=['GET'])
 def generate_session_token():
@@ -85,19 +83,37 @@ def send_token():
 
         wallet_ref = db.collection('wallet_claims').document(recipient)
         if wallet_ref.get().exists:
-            return jsonify({'status': 'error', 'message': 'This wallet has already claimed.'}), 400
+            return jsonify({'status': 'error', 'message': 'This wallet has already claimed. Please check your balance'}), 400
 
         x_forwarded_for = request.headers.get('X-Forwarded-For', '')
         user_ip = x_forwarded_for.split(',')[0].strip() if x_forwarded_for else request.remote_addr
+        print("✅ Using IP for geo check:", user_ip, flush=True)
 
-        print("✅ Using IP for geo check:", user_ip)
+        location_data = {}
+        try:
+            ipinfo_url = f'https://ipinfo.io/{user_ip}?token={IPINFO_TOKEN}'
+            location_data = requests.get(ipinfo_url).json()
+        except Exception as e:
+            print("⚠️ ipinfo.io failed:", e, flush=True)
 
-        location_data = requests.get(f'https://ipapi.co/{user_ip}/json/').json()
-        print("🌍 Location response:", location_data)
-
-        country_code = location_data.get('country_code', 'UNK')
+        country = location_data.get('country', '')
         city = location_data.get('city', '')
-        country = location_data.get('country_name', '')
+        country_code = country if country else ''
+
+        if not country_code:
+            try:
+                fallback_data = requests.get(f'https://ipapi.co/{user_ip}/json/').json()
+                print("🌍 ipapi.co fallback response:", fallback_data, flush=True)
+                country_code = fallback_data.get('country_code', '')
+                country = fallback_data.get('country_name', '')
+                city = fallback_data.get('city', '')
+            except Exception as e:
+                print("❌ ipapi.co fallback failed:", e, flush=True)
+
+        print("🧪 Final server-detected country_code:", country_code, flush=True)
+
+        if not country_code:
+            return jsonify({'status': 'error', 'message': 'Could not determine your country. Claim blocked for safety.'}), 400
 
         today_str = date.today().isoformat()
         ip_claims_ref = db.collection('ip_claims').document(f"{user_ip}_{today_str}")
@@ -118,17 +134,15 @@ def send_token():
         signed_tx = web3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
         tx_hash = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
-        print("✅ Writing user_data to Firestore...")
         db.collection('user_data').add({
             'wallet_address': str(recipient),
             'ip': str(user_ip),
-            'country': str(country) if country else "",
-            'city': str(city) if city else "",
+            'country': str(country),
+            'city': str(city),
             'token_amount': str(amount_tokens),
             'claimed_at': datetime.utcnow().isoformat() + "Z",
             'tx_hash': tx_hash.hex()
         })
-        print("✅ user_data saved.")
 
         wallet_ref.set({
             'claimed_at': datetime.utcnow().isoformat() + "Z",
@@ -147,7 +161,7 @@ def send_token():
         return jsonify({'status': 'success', 'tx_hash': tx_hash.hex()})
 
     except Exception as e:
-        print("❌ Exception occurred:", e)
+        print("❌ Exception occurred:", e, flush=True)
         db.collection('failed_data').add({
             'wallet_address': data.get('recipient', ''),
             'error': str(e)
