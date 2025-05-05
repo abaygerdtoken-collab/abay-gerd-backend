@@ -1,3 +1,4 @@
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from web3 import Web3
@@ -90,11 +91,10 @@ def send_token():
         # Step 2: Recipient
         recipient = Web3.to_checksum_address(data['recipient'])
 
-        # Step 3: Check BscScan for duplicate claim
-        check_url = f"https://api.bscscan.com/api?module=account&action=tokentx&address={recipient}&contractaddress={TOKEN_CONTRACT_ADDRESS}&apikey={BSC_API_KEY}"
-        check_result = requests.get(check_url).json()
-        if check_result.get('result') and isinstance(check_result['result'], list) and len(check_result['result']) > 0:
-            return jsonify({'status': 'error', 'message': 'This wallet has already claimed tokens.'}), 400
+        # Step 3: Check Firestore for duplicate claim
+        wallet_ref = db.collection('wallet_claims').document(recipient)
+        if wallet_ref.get().exists:
+            return jsonify({'status': 'error', 'message': 'This wallet has already claimed.'}), 400
 
         # Step 4: Detect IP and location
         user_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
@@ -125,14 +125,28 @@ def send_token():
         signed_tx = web3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
         tx_hash = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
-        # Step 8: Log claim and increment IP usage
-        db.collection('user_data').add({
-            'wallet_address': recipient,
+        # Step 8: Log claim and update Firestore
+        print("✅ Sending to Firestore user_data...")
+        try:
+            db.collection('user_data').add({
+                'wallet_address': recipient,
+                'ip': user_ip,
+                'country': country,
+                'city': city,
+                'token_amount': amount_tokens,
+                'claimed_at': firestore.SERVER_TIMESTAMP,
+                'tx_hash': tx_hash.hex()
+            })
+            print("✅ user_data saved successfully.")
+        except Exception as e:
+            print("❌ Error saving user_data:", e)
+
+        wallet_ref.set({
+            'claimed_at': firestore.SERVER_TIMESTAMP,
             'ip': user_ip,
             'country': country,
             'city': city,
             'token_amount': amount_tokens,
-            'claimed_at': firestore.SERVER_TIMESTAMP,
             'tx_hash': tx_hash.hex()
         })
 
@@ -144,6 +158,7 @@ def send_token():
         return jsonify({'status': 'success', 'tx_hash': tx_hash.hex()})
 
     except Exception as e:
+        print("❌ Exception occurred:", e)
         db.collection('failed_data').add({
             'wallet_address': data.get('recipient', ''),
             'error': str(e)
