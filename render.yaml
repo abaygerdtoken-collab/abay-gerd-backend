@@ -19,3 +19,9 @@ services:
         value: your_recaptcha_secret_key_here
       - key: BSC_API_KEY
         value: your_bscscan_api_key_here
+  - type: background
+    name: update-token-amount-job
+    env: python
+    startCommand: python update_token_amount_pre_20250505.py
+    buildCommand: pip install -r requirements.txt
+    autoDeploy: false
