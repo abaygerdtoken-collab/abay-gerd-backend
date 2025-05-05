@@ -111,19 +111,26 @@ def send_token():
             country_code = location_data.get('country', '')
             city = location_data.get('city', '')
         except Exception as e:
+        pass
+            print("⚠️ ipinfo.io failed:", e, flush=True)
 
         try:
             fallback_data = requests.get(f'https://ipapi.co/{user_ip}/json/').json()
+            print("🌍 ipapi.co fallback response:", fallback_data, flush=True)
             if not country_code:
                 country_code = fallback_data.get('country_code', '')
             country_name = fallback_data.get('country_name', '')
             if not city:
                 city = fallback_data.get('city', '')
         except Exception as e:
+        pass
+            print("❌ ipapi.co fallback failed:", e, flush=True)
 
         if not country_name:
             country_name = COUNTRY_CODE_TO_NAME.get(country_code, '')
 
+        print("🧪 Final country_code:", country_code, flush=True)
+        print("🧪 Final country_name:", country_name, flush=True)
 
         if not country_code:
             return jsonify({'status': 'error', 'message': 'Could not determine your country. Claim blocked for safety.'}), 400
@@ -175,6 +182,8 @@ def send_token():
         return jsonify({'status': 'success', 'tx_hash': tx_hash.hex()})
 
     except Exception as e:
+        pass
+        print("❌ Exception occurred:", e, flush=True)
         db.collection('failed_data').add({
             'wallet_address': data.get('recipient', ''),
             'error': str(e)
@@ -183,4 +192,3 @@ def send_token():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
-
