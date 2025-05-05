@@ -3,7 +3,6 @@ services:
     name: abay-gerd-token-api
     env: python
     plan: free
-    buildCommand: ""
     startCommand: python main.py
     envVars:
       - key: WEB3_PROVIDER
@@ -16,15 +15,7 @@ services:
         value: your_token_contract_address_here
       - key: TOKEN_DECIMALS
         value: "2"
-      - key: SERVER_SECRET_KEY
-        value: your_secret_key_here
       - key: RECAPTCHA_SECRET_KEY
         value: your_recaptcha_secret_key_here
       - key: BSC_API_KEY
         value: your_bscscan_api_key_here
-      - key: FIREBASE_PROJECT_ID
-        value: your_firebase_project_id_here
-      - key: FIREBASE_PRIVATE_KEY
-        value: your_firebase_private_key_here
-      - key: FIREBASE_CLIENT_EMAIL
-        value: your_firebase_client_email_here
