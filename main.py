@@ -12,7 +12,6 @@ import secrets
 app = Flask(__name__)
 CORS(app)
 
-# Load Environment Variables
 WEB3_PROVIDER = os.environ.get("WEB3_PROVIDER")
 PRIVATE_KEY = os.environ.get("PRIVATE_KEY")
 SENDER_ADDRESS = os.environ.get("SENDER_ADDRESS")
@@ -21,7 +20,6 @@ TOKEN_DECIMALS = int(os.environ.get("TOKEN_DECIMALS", 2))
 RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY")
 BSC_API_KEY = os.environ.get("BSC_API_KEY")
 
-# Setup Web3
 web3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER))
 if not web3.is_connected():
     raise Exception("Failed to connect to Web3 provider!")
@@ -29,7 +27,6 @@ if not web3.is_connected():
 SENDER_ADDRESS = Web3.to_checksum_address(SENDER_ADDRESS)
 TOKEN_CONTRACT_ADDRESS = Web3.to_checksum_address(TOKEN_CONTRACT_ADDRESS)
 
-# Setup Token Contract
 TOKEN_ABI = [
     {
         "constant": False,
@@ -41,12 +38,10 @@ TOKEN_ABI = [
 ]
 token_contract = web3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 
-# Setup Firebase
 cred = credentials.Certificate('/etc/secrets/abay-firebase.json')
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-# In-memory session token store
 session_tokens = {}
 
 @app.route('/')
@@ -65,7 +60,6 @@ def send_token():
     try:
         data = request.json
 
-        # Step 0: Session token validation
         session_token = data.get('session_token')
         if not session_token or session_token not in session_tokens:
             return jsonify({'status': 'error', 'message': 'Missing or invalid session token'}), 403
@@ -74,7 +68,6 @@ def send_token():
             return jsonify({'status': 'error', 'message': 'Session token expired'}), 403
         session_tokens.pop(session_token, None)
 
-        # Step 1: reCAPTCHA validation
         recaptcha_response = data.get('recaptchaToken')
         if not recaptcha_response:
             return jsonify({'status': 'error', 'message': 'Missing reCAPTCHA token'}), 400
@@ -88,33 +81,33 @@ def send_token():
         if not recaptcha_verify.get('success'):
             return jsonify({'status': 'error', 'message': 'Invalid reCAPTCHA'}), 400
 
-        # Step 2: Recipient
         recipient = Web3.to_checksum_address(data['recipient'])
 
-        # Step 3: Check Firestore for duplicate claim
         wallet_ref = db.collection('wallet_claims').document(recipient)
         if wallet_ref.get().exists:
             return jsonify({'status': 'error', 'message': 'This wallet has already claimed.'}), 400
 
-        # Step 4: Detect IP and location
-        user_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        x_forwarded_for = request.headers.get('X-Forwarded-For', '')
+        user_ip = x_forwarded_for.split(',')[0].strip() if x_forwarded_for else request.remote_addr
+
+        print("✅ Using IP for geo check:", user_ip)
+
         location_data = requests.get(f'https://ipapi.co/{user_ip}/json/').json()
+        print("🌍 Location response:", location_data)
+
         country_code = location_data.get('country_code', 'UNK')
         city = location_data.get('city', '')
         country = location_data.get('country_name', '')
 
-        # Step 5: Rate limiting by IP per day
         today_str = date.today().isoformat()
         ip_claims_ref = db.collection('ip_claims').document(f"{user_ip}_{today_str}")
         ip_claim_doc = ip_claims_ref.get()
         if ip_claim_doc.exists and ip_claim_doc.to_dict().get('count', 0) >= 15:
             return jsonify({'status': 'error', 'message': 'Daily claim limit reached for your IP'}), 429
 
-        # Step 6: Decide amount
         amount_tokens = 75000 if country_code == 'ET' else 10000
         amount = int(amount_tokens * (10 ** TOKEN_DECIMALS))
 
-        # Step 7: Send tokens
         nonce = web3.eth.get_transaction_count(SENDER_ADDRESS)
         tx = token_contract.functions.transfer(recipient, amount).build_transaction({
             'from': SENDER_ADDRESS,
@@ -125,28 +118,24 @@ def send_token():
         signed_tx = web3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
         tx_hash = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
-        # Step 8: Log claim and update Firestore
-        print("✅ Sending to Firestore user_data...")
-        try:
-            db.collection('user_data').add({
-                'wallet_address': recipient,
-                'ip': user_ip,
-                'country': country,
-                'city': city,
-                'token_amount': amount_tokens,
-                'claimed_at': firestore.SERVER_TIMESTAMP,
-                'tx_hash': tx_hash.hex()
-            })
-            print("✅ user_data saved successfully.")
-        except Exception as e:
-            print("❌ Error saving user_data:", e)
+        print("✅ Writing user_data to Firestore...")
+        db.collection('user_data').add({
+            'wallet_address': str(recipient),
+            'ip': str(user_ip),
+            'country': str(country) if country else "",
+            'city': str(city) if city else "",
+            'token_amount': str(amount_tokens),
+            'claimed_at': datetime.utcnow().isoformat() + "Z",
+            'tx_hash': tx_hash.hex()
+        })
+        print("✅ user_data saved.")
 
         wallet_ref.set({
-            'claimed_at': firestore.SERVER_TIMESTAMP,
-            'ip': user_ip,
-            'country': country,
-            'city': city,
-            'token_amount': amount_tokens,
+            'claimed_at': datetime.utcnow().isoformat() + "Z",
+            'ip': str(user_ip),
+            'country': str(country),
+            'city': str(city),
+            'token_amount': str(amount_tokens),
             'tx_hash': tx_hash.hex()
         })
 
