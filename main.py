@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from web3 import Web3
@@ -44,7 +43,7 @@ session_tokens = {}
 
 @app.route('/')
 def home():
-    return "Abay GERD Token API v3 is running."
+    return "Abay GERD Token API is running."
 
 @app.route('/auth/session', methods=['GET'])
 def generate_session_token():
@@ -83,34 +82,36 @@ def send_token():
 
         wallet_ref = db.collection('wallet_claims').document(recipient)
         if wallet_ref.get().exists:
-            return jsonify({'status': 'error', 'message': 'This wallet has already claimed. Please check your balance'}), 400
+            return jsonify({'status': 'error', 'message': 'This wallet has already claimed.'}), 400
 
         x_forwarded_for = request.headers.get('X-Forwarded-For', '')
         user_ip = x_forwarded_for.split(',')[0].strip() if x_forwarded_for else request.remote_addr
-        print("✅ Using IP for geo check:", user_ip, flush=True)
 
-        location_data = {}
+        country_code = ''
+        country_name = ''
+        city = ''
+
         try:
             ipinfo_url = f'https://ipinfo.io/{user_ip}?token={IPINFO_TOKEN}'
             location_data = requests.get(ipinfo_url).json()
+            country_code = location_data.get('country', '')
+            city = location_data.get('city', '')
         except Exception as e:
             print("⚠️ ipinfo.io failed:", e, flush=True)
 
-        country = location_data.get('country', '')
-        city = location_data.get('city', '')
-        country_code = country if country else ''
-
-        if not country_code:
-            try:
-                fallback_data = requests.get(f'https://ipapi.co/{user_ip}/json/').json()
-                print("🌍 ipapi.co fallback response:", fallback_data, flush=True)
+        try:
+            fallback_data = requests.get(f'https://ipapi.co/{user_ip}/json/').json()
+            print("🌍 ipapi.co fallback response:", fallback_data, flush=True)
+            if not country_code:
                 country_code = fallback_data.get('country_code', '')
-                country = fallback_data.get('country_name', '')
+            country_name = fallback_data.get('country_name', '')
+            if not city:
                 city = fallback_data.get('city', '')
-            except Exception as e:
-                print("❌ ipapi.co fallback failed:", e, flush=True)
+        except Exception as e:
+            print("❌ ipapi.co fallback failed:", e, flush=True)
 
-        print("🧪 Final server-detected country_code:", country_code, flush=True)
+        print("🧪 Final country_code:", country_code, flush=True)
+        print("🧪 Final country_name:", country_name, flush=True)
 
         if not country_code:
             return jsonify({'status': 'error', 'message': 'Could not determine your country. Claim blocked for safety.'}), 400
@@ -137,7 +138,7 @@ def send_token():
         db.collection('user_data').add({
             'wallet_address': str(recipient),
             'ip': str(user_ip),
-            'country': str(country),
+            'country': str(country_name),
             'city': str(city),
             'token_amount': str(amount_tokens),
             'claimed_at': datetime.utcnow().isoformat() + "Z",
@@ -147,7 +148,7 @@ def send_token():
         wallet_ref.set({
             'claimed_at': datetime.utcnow().isoformat() + "Z",
             'ip': str(user_ip),
-            'country': str(country),
+            'country': str(country_name),
             'city': str(city),
             'token_amount': str(amount_tokens),
             'tx_hash': tx_hash.hex()
