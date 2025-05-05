@@ -1,3 +1,4 @@
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from web3 import Web3
@@ -18,6 +19,19 @@ TOKEN_CONTRACT_ADDRESS = os.environ.get("TOKEN_CONTRACT_ADDRESS")
 TOKEN_DECIMALS = int(os.environ.get("TOKEN_DECIMALS", 2))
 RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY")
 IPINFO_TOKEN = os.environ.get("IPINFO_TOKEN")
+
+COUNTRY_CODE_TO_NAME = {
+    "ET": "Ethiopia",
+    "US": "United States",
+    "PT": "Portugal",
+    "GB": "United Kingdom",
+    "DE": "Germany",
+    "FR": "France",
+    "NG": "Nigeria",
+    "IN": "India",
+    "CN": "China",
+    "CA": "Canada"
+}
 
 web3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER))
 if not web3.is_connected():
@@ -110,6 +124,9 @@ def send_token():
         except Exception as e:
             print("❌ ipapi.co fallback failed:", e, flush=True)
 
+        if not country_name:
+            country_name = COUNTRY_CODE_TO_NAME.get(country_code, '')
+
         print("🧪 Final country_code:", country_code, flush=True)
         print("🧪 Final country_name:", country_name, flush=True)
 
@@ -123,10 +140,11 @@ def send_token():
             return jsonify({'status': 'error', 'message': 'Daily claim limit reached for your IP'}), 429
 
         amount_tokens = 75000 if country_code == 'ET' else 10000
-        amount = int(amount_tokens * (10 ** TOKEN_DECIMALS))
+        amount_scaled = int(amount_tokens * (10 ** TOKEN_DECIMALS))  # Scaled for on-chain
+        amount_str = str(amount_scaled)
 
         nonce = web3.eth.get_transaction_count(SENDER_ADDRESS)
-        tx = token_contract.functions.transfer(recipient, amount).build_transaction({
+        tx = token_contract.functions.transfer(recipient, amount_scaled).build_transaction({
             'from': SENDER_ADDRESS,
             'nonce': nonce,
             'gas': 52006,
@@ -140,7 +158,7 @@ def send_token():
             'ip': str(user_ip),
             'country': str(country_name),
             'city': str(city),
-            'token_amount': str(amount_tokens),
+            'token_amount': amount_str,
             'claimed_at': datetime.utcnow().isoformat() + "Z",
             'tx_hash': tx_hash.hex()
         })
@@ -150,7 +168,7 @@ def send_token():
             'ip': str(user_ip),
             'country': str(country_name),
             'city': str(city),
-            'token_amount': str(amount_tokens),
+            'token_amount': amount_str,
             'tx_hash': tx_hash.hex()
         })
 
