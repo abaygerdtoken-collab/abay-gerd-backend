@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, date
 import secrets
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "https://www.abaygerdtoken.com"}})
 
 WEB3_PROVIDER = os.environ.get("WEB3_PROVIDER")
 PRIVATE_KEY = os.environ.get("PRIVATE_KEY")
