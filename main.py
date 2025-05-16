@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, date
 import secrets
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/send-token": {"origins": "https://www.abaygerdtoken.com"}})
 
 WEB3_PROVIDER = os.environ.get("WEB3_PROVIDER")
 PRIVATE_KEY = os.environ.get("PRIVATE_KEY")
@@ -273,7 +273,7 @@ COUNTRY_CODE_TO_NAME = {
 }
 
 web3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER))
-if not web3.is_connected():
+if not web3.isConnected():
     raise Exception("Failed to connect to Web3 provider!")
 
 SENDER_ADDRESS = Web3.to_checksum_address(SENDER_ADDRESS)
@@ -288,7 +288,9 @@ TOKEN_ABI = [{
 }]
 token_contract = web3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 
-cred = credentials.Certificate('/etc/secrets/abay-firebase.json')
+cred_path = os.environ.get("FIREBASE_CRED_PATH")
+cred = credentials.Certificate(cred_path)
+
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -320,7 +322,7 @@ def send_token():
 
         recaptcha_response = data.get('recaptchaToken')
         if not recaptcha_response:
-            return jsonify({'status': 'error', 'message': 'Missing reCAPTCHA token'}), 400
+            return jsonify({'status': 'error', 'message': 'Please complete reCAPTCHA'}), 400
 
         verify_url = "https://www.google.com/recaptcha/api/siteverify"
         recaptcha_verify = requests.post(verify_url, data={
@@ -331,11 +333,16 @@ def send_token():
         if not recaptcha_verify.get('success'):
             return jsonify({'status': 'error', 'message': 'Invalid reCAPTCHA'}), 400
 
-        recipient = Web3.to_checksum_address(data['recipient'])
+        recipient_raw = data.get("recipient")
+        if not Web3.is_address(recipient_raw):
+            return jsonify({'status': 'error', 'message': 'Invalid wallet address'}), 400
+
+        recipient = Web3.to_checksum_address(recipient_raw)
+
 
         wallet_ref = db.collection('wallet_claims').document(recipient)
         if wallet_ref.get().exists:
-            return jsonify({'status': 'error', 'message': 'This wallet has already claimed.'}), 400
+            return jsonify({'status': 'error', 'message': 'This wallet has already claimed its share of GERD token.'}), 400
 
         x_forwarded_for = request.headers.get('X-Forwarded-For', '')
         user_ip = x_forwarded_for.split(',')[0].strip() if x_forwarded_for else request.remote_addr

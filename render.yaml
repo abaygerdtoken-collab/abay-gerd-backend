@@ -1,27 +1,24 @@
 services:
   - type: web
-    name: abay-gerd-token-api
+    name: gerd-claim-api
     env: python
     plan: free
-    startCommand: python main.py
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
     envVars:
       - key: WEB3_PROVIDER
-        value: your_web3_provider_url_here
+        sync: false
       - key: PRIVATE_KEY
-        value: your_private_key_here
+        sync: false
       - key: SENDER_ADDRESS
-        value: your_sender_wallet_address_here
+        sync: false
       - key: TOKEN_CONTRACT_ADDRESS
-        value: your_token_contract_address_here
+        sync: false
       - key: TOKEN_DECIMALS
-        value: "2"
+        sync: false
       - key: RECAPTCHA_SECRET_KEY
-        value: your_recaptcha_secret_key_here
-      - key: BSC_API_KEY
-        value: your_bscscan_api_key_here
-  - type: background
-    name: update-token-amount-job
-    env: python
-    startCommand: python update_token_amount_pre_20250505.py
-    buildCommand: pip install -r requirements.txt
-    autoDeploy: false
+        sync: false
+      - key: IPINFO_TOKEN
+        sync: false
+      - key: FIREBASE_CRED_PATH
+        sync: false
