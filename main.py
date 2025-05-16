@@ -273,7 +273,7 @@ COUNTRY_CODE_TO_NAME = {
 }
 
 web3 = Web3(Web3.HTTPProvider(WEB3_PROVIDER))
-if not web3.isConnected():
+if not web3.is_connected():
     raise Exception("Failed to connect to Web3 provider!")
 
 SENDER_ADDRESS = Web3.to_checksum_address(SENDER_ADDRESS)
