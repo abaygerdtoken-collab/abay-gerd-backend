@@ -38,6 +38,10 @@ web3 = Web3(Web3.HTTPProvider(RPC_URL))
 account = web3.eth.account.from_key(PRIVATE_KEY)
 contract = web3.eth.contract(address=VESTING_CONTRACT_ADDRESS, abi=CONTRACT_ABI)
 
+@app.route("/", methods=["GET"])
+def home():
+    return "GERD Vesting Testnet API is running ✅"
+
 @app.route("/can-release", methods=["GET"])
 def can_release():
     try:
@@ -52,6 +56,14 @@ def next_release_date():
         timestamp = contract.functions.nextReleaseDate().call()
         human_readable = datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
         return jsonify(nextReleaseTimestamp=timestamp, nextReleaseDate=human_readable)
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+@app.route("/debug-next-release", methods=["GET"])
+def debug_release():
+    try:
+        timestamp = contract.functions.nextReleaseDate().call()
+        return jsonify(nextReleaseDate=timestamp)
     except Exception as e:
         return jsonify(error=str(e)), 500
 
