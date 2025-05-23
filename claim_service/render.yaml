@@ -3,6 +3,7 @@ services:
     name: gerd-claim-api
     env: python
     plan: free
+    rootDir: claim_service
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python main.py"
     envVars:
