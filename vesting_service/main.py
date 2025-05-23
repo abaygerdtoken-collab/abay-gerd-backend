@@ -1,10 +1,10 @@
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 from web3 import Web3
-from datetime import datetime, timezone, timedelta
 import os
 
 app = Flask(__name__)
-
+CORS(app)
 # === Configuration ===
 RPC_URL = "https://data-seed-prebsc-1-s1.binance.org:8545/"
 PRIVATE_KEY = os.getenv("GERD_PRIVATE_KEY")
