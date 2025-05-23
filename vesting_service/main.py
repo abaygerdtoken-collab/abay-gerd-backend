@@ -1,6 +1,6 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from web3 import Web3
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
 
 app = Flask(__name__)
@@ -13,21 +13,14 @@ VESTING_CONTRACT_ADDRESS = "0xC3C2b095C3aA55ACecc7fBA44C6B9D3f56dC43Da"
 CONTRACT_ABI = [
     {
         "inputs": [],
-        "name": "releaseToken",
+        "name": "releaseTokens",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
     },
     {
         "inputs": [],
-        "name": "canRelease",
-        "outputs": [{"internalType": "bool", "name": "", "type": "bool"}],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "inputs": [],
-        "name": "nextReleaseDate",
+        "name": "lastReleaseTime",
         "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
         "stateMutability": "view",
         "type": "function"
@@ -40,51 +33,45 @@ contract = web3.eth.contract(address=VESTING_CONTRACT_ADDRESS, abi=CONTRACT_ABI)
 
 @app.route("/", methods=["GET"])
 def home():
-    return "GERD Vesting Testnet API is running ✅"
+    return "GERD Vesting API (adjusted) is running ✅"
+
+@app.route("/last-release-time", methods=["GET"])
+def last_release_time():
+    try:
+        timestamp = contract.functions.lastReleaseTime().call()
+        human_readable = datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
+        return jsonify(lastReleaseTime=timestamp, lastReleaseTimeUTC=human_readable)
+    except Exception as e:
+        return jsonify(error=str(e)), 500
 
 @app.route("/can-release", methods=["GET"])
 def can_release():
     try:
-        result = contract.functions.canRelease().call()
-        return jsonify(canRelease=result)
+        last_time = contract.functions.lastReleaseTime().call()
+        now = datetime.now(timezone.utc)
+        last_dt = datetime.utcfromtimestamp(last_time).replace(tzinfo=timezone.utc)
+        next_dt = last_dt + timedelta(days=7)
+        day_of_week = now.weekday()  # Monday=0, Sunday=6
+
+        eligible = now >= next_dt and day_of_week == 2  # 2 = Wednesday
+        return jsonify(canRelease=eligible, nextEligibleUTC=next_dt.strftime('%Y-%m-%d %H:%M:%S UTC'))
     except Exception as e:
         return jsonify(canRelease=False, error=str(e)), 500
-
-@app.route("/next-release-date", methods=["GET"])
-def next_release_date():
-    try:
-        timestamp = contract.functions.nextReleaseDate().call()
-        human_readable = datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S UTC')
-        return jsonify(nextReleaseTimestamp=timestamp, nextReleaseDate=human_readable)
-    except Exception as e:
-        return jsonify(error=str(e)), 500
-
-@app.route("/debug-next-release", methods=["GET"])
-def debug_release():
-    try:
-        timestamp = contract.functions.nextReleaseDate().call()
-        return jsonify(nextReleaseDate=timestamp)
-    except Exception as e:
-        return jsonify(error=str(e)), 500
 
 @app.route("/release-token", methods=["POST"])
 def release_token():
     try:
-        if not contract.functions.canRelease().call():
-            return jsonify(success=False, message="Release not allowed yet. Please wait until next scheduled time.")
-
+        # Let smart contract enforce logic — this only submits tx
         nonce = web3.eth.get_transaction_count(account.address)
-        txn = contract.functions.releaseToken().build_transaction({
+        txn = contract.functions.releaseTokens().build_transaction({
             'from': account.address,
             'nonce': nonce,
             'gas': 200000,
             'gasPrice': web3.to_wei('10', 'gwei')
         })
-
         signed_txn = web3.eth.account.sign_transaction(txn, private_key=PRIVATE_KEY)
         tx_hash = web3.eth.send_raw_transaction(signed_txn.rawTransaction)
         return jsonify(success=True, tx_hash=tx_hash.hex())
-
     except Exception as e:
         return jsonify(success=False, message=str(e))
 
