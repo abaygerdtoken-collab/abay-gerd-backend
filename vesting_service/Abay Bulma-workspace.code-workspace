@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "../abay/claim1k"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"liveServer.settings.multiRootWorkspaceName": "Bulma"
+	}
+}
