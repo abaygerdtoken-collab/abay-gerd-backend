@@ -73,7 +73,7 @@ def can_release():
         eligible = now >= adjusted_next_dt and day_of_week == 2  # 2 = Wednesday
         return jsonify(
             canRelease=eligible,
-            adjustedNextEligibleUTC=adjusted_next_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+            nextEligibleUTC=adjusted_next_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
         )
     except Exception as e:
         return jsonify(canRelease=False, error=str(e)), 500
