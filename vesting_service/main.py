@@ -67,7 +67,7 @@ def can_release():
         last_dt = datetime.utcfromtimestamp(last_time).replace(tzinfo=timezone.utc)
 
         # Allow 5 hours early release
-        adjusted_next_dt = last_dt + timedelta(days=7) - timedelta(hours=5)
+        adjusted_next_dt = last_dt + timedelta(days=7) - timedelta(hours=6)
         day_of_week = now.weekday()  # Monday=0, Sunday=6
 
         eligible = now >= adjusted_next_dt and day_of_week == 2  # 2 = Wednesday
