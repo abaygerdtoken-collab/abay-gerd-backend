@@ -45,19 +45,39 @@ def last_release_time():
     except Exception as e:
         return jsonify(error=str(e)), 500
 
+# @app.route("/can-release", methods=["GET"])
+# def can_release():
+#     try:
+#         last_time = contract.functions.lastReleaseTime().call()
+#         now = datetime.now(timezone.utc)
+#         last_dt = datetime.utcfromtimestamp(last_time).replace(tzinfo=timezone.utc)
+#         next_dt = last_dt + timedelta(days=7)
+#         day_of_week = now.weekday()  # Monday=0, Sunday=6
+
+#         eligible = now >= next_dt and day_of_week == 2  # 2 = Wednesday
+#         return jsonify(canRelease=eligible, nextEligibleUTC=next_dt.strftime('%Y-%m-%d %H:%M:%S UTC'))
+#     except Exception as e:
+#         return jsonify(canRelease=False, error=str(e)), 500
+
 @app.route("/can-release", methods=["GET"])
 def can_release():
     try:
         last_time = contract.functions.lastReleaseTime().call()
         now = datetime.now(timezone.utc)
         last_dt = datetime.utcfromtimestamp(last_time).replace(tzinfo=timezone.utc)
-        next_dt = last_dt + timedelta(days=7)
+
+        # Allow 5 hours early release
+        adjusted_next_dt = last_dt + timedelta(days=7) - timedelta(hours=5)
         day_of_week = now.weekday()  # Monday=0, Sunday=6
 
-        eligible = now >= next_dt and day_of_week == 2  # 2 = Wednesday
-        return jsonify(canRelease=eligible, nextEligibleUTC=next_dt.strftime('%Y-%m-%d %H:%M:%S UTC'))
+        eligible = now >= adjusted_next_dt and day_of_week == 2  # 2 = Wednesday
+        return jsonify(
+            canRelease=eligible,
+            adjustedNextEligibleUTC=adjusted_next_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+        )
     except Exception as e:
         return jsonify(canRelease=False, error=str(e)), 500
+
 
 @app.route("/release-token", methods=["POST"])
 def release_token():
