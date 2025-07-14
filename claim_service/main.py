@@ -428,5 +428,72 @@ def send_token():
         })
         return jsonify({'status': 'error', 'message': str(e)}), 400
 
+@app.route('/webhook/send-doc', methods=['POST'])
+def send_pandadoc():
+    data = request.json
+
+    # CLIENT data
+    client_first_name = data.get('client_first_name', '')
+    client_last_name = data.get('client_last_name', '')
+    client_email = data.get('client_email', '')
+    client_phone = data.get('client_phone', '')
+    client_street = data.get('client_street', '')
+    client_city = data.get('client_city', '')
+    client_state = data.get('client_state', '')
+    client_postal = data.get('client_postal', '')
+
+    # SENDER data
+    sender_first_name = data.get('sender_first_name', '')
+    sender_last_name = data.get('sender_last_name', '')
+    sender_email = data.get('sender_email', '')
+
+    PANDADOC_API_KEY = os.environ.get("PANDADOC_API_KEY")
+    TEMPLATE_ID = os.environ.get("PANDADOC_TEMPLATE_ID")
+    API_URL = 'https://api.pandadoc.com/public/v1/documents'
+
+    headers = {
+        'Authorization': f'API-Key {PANDADOC_API_KEY}',
+        'Content-Type': 'application/json'
+    }
+
+    payload = {
+        "name": f"{client_first_name} {client_last_name} Agreement",
+        "template_uuid": TEMPLATE_ID,
+        "recipients": [
+            {
+                "email": client_email,
+                "first_name": client_first_name,
+                "last_name": client_last_name,
+                "role": "Client"
+            },
+            {
+                "email": sender_email,
+                "first_name": sender_first_name,
+                "last_name": sender_last_name,
+                "role": "Sender"
+            }
+        ],
+        "tokens": [
+            {"name": "Client.FirstName", "value": client_first_name},
+            {"name": "Client.LastName", "value": client_last_name},
+            {"name": "Client.StreetAddress", "value": client_street},
+            {"name": "Client.City", "value": client_city},
+            {"name": "Client.State", "value": client_state},
+            {"name": "Client.PostalCode", "value": client_postal},
+            {"name": "Client.Email", "value": client_email},
+            {"name": "Client.Phone", "value": client_phone},
+            {"name": "Sender.FirstName", "value": sender_first_name},
+            {"name": "Sender.LastName", "value": sender_last_name}
+        ],
+        "send_email": True
+    }
+
+    response = requests.post(API_URL, headers=headers, json=payload)
+
+    try:
+        return jsonify(response.json()), response.status_code
+    except Exception:
+        return {"error": "Non-JSON response from PandaDoc"}, 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
