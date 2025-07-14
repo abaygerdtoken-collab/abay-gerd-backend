@@ -24,7 +24,7 @@ services:
       - key: FIREBASE_CRED_PATH
         sync: false
       - key: PANDADOC_API_KEY
-        value: b34725f3c5d56eefd3cb1216c7cc428237c2c157
+        sync: false
       - key: PANDADOC_TEMPLATE_ID
-        value: V3Zi7mdKvgYYuZsMZDzmse
+        sync: false
 
