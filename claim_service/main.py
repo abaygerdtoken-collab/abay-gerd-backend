@@ -459,6 +459,8 @@ def send_pandadoc():
     payload = {
         "name": f"{client_first_name} {client_last_name} Agreement",
         "template_uuid": TEMPLATE_ID,
+        "status": "sent",         # 👈 send immediately
+        "send_email": True,
         "recipients": [
             {
                 "email": client_email,
@@ -472,20 +474,7 @@ def send_pandadoc():
                 "last_name": sender_last_name,
                 "role": "Sender"
             }
-        ],
-        "tokens": [
-            {"name": "Client.FirstName", "value": client_first_name},
-            {"name": "Client.LastName", "value": client_last_name},
-            {"name": "Client.StreetAddress", "value": client_street},
-            {"name": "Client.City", "value": client_city},
-            {"name": "Client.State", "value": client_state},
-            {"name": "Client.PostalCode", "value": client_postal},
-            {"name": "Client.Email", "value": client_email},
-            {"name": "Client.Phone", "value": client_phone},
-            {"name": "Sender.FirstName", "value": sender_first_name},
-            {"name": "Sender.LastName", "value": sender_last_name}
-        ],
-        "send_email": True
+        ]
     }
 
     response = requests.post(API_URL, headers=headers, json=payload)
@@ -494,6 +483,7 @@ def send_pandadoc():
         return jsonify(response.json()), response.status_code
     except Exception:
         return {"error": "Non-JSON response from PandaDoc"}, 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
