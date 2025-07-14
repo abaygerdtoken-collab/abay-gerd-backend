@@ -431,7 +431,9 @@ def send_token():
 @app.route('/webhook/send-doc', methods=['POST'])
 def send_pandadoc():
     data = request.json
-    print("📦 Incoming Payload:", data)
+    import sys
+    print("📦 Incoming Payload:", data, file=sys.stdout, flush=True)
+
 
     # CLIENT data
     client_first_name = data.get('client_first_name', '')
