@@ -459,14 +459,21 @@ def send_pandadoc():
     payload = {
         "name": f"{client_first_name} {client_last_name} Agreement",
         "template_uuid": TEMPLATE_ID,
-        "status": "sent",         # 👈 send immediately
+        "status": "sent",
         "send_email": True,
         "recipients": [
             {
                 "email": client_email,
                 "first_name": client_first_name,
                 "last_name": client_last_name,
-                "role": "Client"
+                "role": "Client",
+                "fields": {
+                    "StreetAddress": client_street,
+                    "City": client_city,
+                    "State": client_state,
+                    "PostalCode": client_postal,
+                    "Phone": client_phone
+                }
             },
             {
                 "email": sender_email,
@@ -483,6 +490,7 @@ def send_pandadoc():
         return jsonify(response.json()), response.status_code
     except Exception:
         return {"error": "Non-JSON response from PandaDoc"}, 500
+
 
 
 if __name__ == '__main__':
