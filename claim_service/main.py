@@ -430,10 +430,9 @@ def send_token():
 
 @app.route('/webhook/send-doc', methods=['POST'])
 def send_pandadoc():
-    data = request.json
     import sys
-    print("📦 Incoming Payload:", data, file=sys.stdout, flush=True)
-
+    data = request.json.get('customData', {})  # ✅ Get correct sub-payload from GHL
+    print("📦 Incoming customData Payload:", data, file=sys.stdout, flush=True)
 
     # CLIENT data
     client_first_name = data.get('client_first_name', '')
@@ -462,14 +461,21 @@ def send_pandadoc():
     payload = {
         "name": f"{client_first_name} {client_last_name} Agreement",
         "template_uuid": TEMPLATE_ID,
-        "status": "sent",         # 👈 send immediately
+        "status": "sent",  # ✅ Send immediately
         "send_email": True,
         "recipients": [
             {
                 "email": client_email,
                 "first_name": client_first_name,
                 "last_name": client_last_name,
-                "role": "Client"
+                "role": "Client",
+                "fields": {
+                    "StreetAddress": client_street,
+                    "City": client_city,
+                    "State": client_state,
+                    "PostalCode": client_postal,
+                    "Phone": client_phone
+                }
             },
             {
                 "email": sender_email,
