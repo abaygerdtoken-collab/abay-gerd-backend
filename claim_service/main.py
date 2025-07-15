@@ -496,3 +496,116 @@ def send_pandadoc():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
+
+
+from cryptography.hazmat.primitives import serialization
+import time, jwt
+
+USER_ID = "9827ea71-d93b-4796-82ae-91a7e95accad"
+ACCOUNT_ID = "5f090bc3-13b0-491e-9fc7-82413d546206"
+INTEGRATION_KEY = "c3707e9c-c61b-4aa1-a05f-247d9acdebb9"
+TEMPLATE_ID = "25cde1e9-033e-43dd-819d-cc0deb0dc900"
+BASE_URL = "https://demo.docusign.net"
+
+PRIVATE_KEY = """-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEAvnmDqxxl6LRHYSz6YjPQLGK3c/TvMsZGeR9rKkkIbw2Ky7HE
+Cv1fJZ4/T/0/Q2CmhAZdcPitQA/9VpyrHegu8A5A3zTq+Teh4/+vaLZCn8IEI2gG
+9MkJj9zPCm3IUZ57RI2dMe9dXEBNexd0Nnui9oTFbH/T5QIpH5cU2uVjm0o/SVKQ
+RgwrjBRUKgvLZH4Tv6QeQPypnDWKKA7Hpx6rxaFxypgvaM7+JhyDz9uPmk6TdX97
+ahuivVhaXt8NLP549JJ6YbVmHzXjmJwCYWtG7J84ZK5vrv6V1tTHuK1SZg499KQI
+zUKzH+MqWOiDpGBaweM9UIWzsbp4R3Sl5XLaLwIDAQABAoIBAAoVacSNwNFkdeDt
+niXDw3IOGdMwNNeVypZP9P7sld83MtFczFmel0JpEcX8zLQW8knMAndgGt/o2MsU
+iTSQnaeEwadvaD8gVFg7KYCcIYPOpCRxteiQmgp9MJLHRBMaFkGHU7qYhvNCzjdF
+gxf9TJ/LYJ5BWCjoB+BNwcNi4HaQjMvt13717iLWiMoEYAQyfhFXHIfHk1FRBl1A
+sMrsfL6RqO3UG/t5adTe82S3EwIR2h5SGEiaAvIbXDVCnBAwofCFe1aPTbpsjZ4/
+4LoCUK4HyDnjXrBNljbb9Y1O6UZkrbcEq4PhItCWbQ/deECxu9MMghvQrXVy3OXP
++JVQ6n0CgYEA46tmZ4TP+Fti/951+KO+OV6A5g4GmMhFfHKGYlT68SjaBfPXR4Ew
+eShrQJUsvaSZvHQRyOu+VU/P/mI/WBVm5MVs5ijcINKRCMM1pNefH+sKZNv9xbts
+w8Bpb4QEnuKEA4nijDCpK3Vjfxsfufkz0PFgSsjAJ8SSS5dyLpXbPdUCgYEA1i09
+xZnpqdFsLrwF0+Qqfa4LzVQL3L44KncRq8ckrP6puPubU3EEIw5iVELzBMmhMu4U
+tC0avn713wWHTBwUHqs5N2V6i5m6uq1x85cTamJRQaWR9pooYSAb/pKzpvwSk5Kb
+0Q5UV2TA2QEE85Eg6mqNRAo0NISKsKP+AnyaBfMCgYAoBBVQtqBTN8TT0kcL98PU
+k462YNq5+eF0uTBzkho1TwfbKfu5vrRFZ1xKkq21e3vmCsShewYOOqQFQ0F8+u4F
+4cl9PstKHZiOYLlKCvgWBRrjlWMqYQIB+gzOI/cn8gpgENk36MmjMNPXIG5YIrv/
+yp0xJ83Wb4+DJ9BS7dYGLQKBgB5HPRFfZfI1AhdFS4meGwezgEWh2R924NfYB26C
+c8PlKLdXEqlkM9KE6Q/Cezq1Co35rIGgUsSVjErgLDVtTsbbK/aR6RYtQIG9nXtz
+YzJJ/fTK5Gy5dHXupSaDNNSplDK6qj6OyQul2cGT7FBGtyGMuLXiv2ihSD4aoQFW
+/itTAoGBAMlP1b2rhiA7uC/PVaVAaVUWQb/6SzOfsVgSe1stWpNTz5PFOguzdCq0
+XPW0S8A67gT6D32asGKwb566ge/l1VZYksX8vs7pbiif9kBuWZmHOecm8j9BhmZa
+WKYUrH4B8fwgef2hyPFY/N3ME0hbmj9Fvnf8ZIr3V8u8RWetFRC6
+-----END RSA PRIVATE KEY-----"""
+
+def get_access_token():
+    current_time = int(time.time())
+    payload = {
+        "iss": INTEGRATION_KEY,
+        "sub": USER_ID,
+        "aud": "account-d.docusign.com",
+        "iat": current_time,
+        "exp": current_time + 3600,
+        "scope": "signature impersonation"
+    }
+
+    private_key_bytes = PRIVATE_KEY.encode("utf-8")
+    token = jwt.encode(payload, private_key_bytes, algorithm="RS256")
+
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    data = {
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": token
+    }
+
+    res = requests.post("https://account-d.docusign.com/oauth/token", headers=headers, data=data)
+    res.raise_for_status()
+    return res.json()["access_token"]
+
+@app.route("/webhook/send-docusign", methods=["POST"])
+def send_docusign():
+    data = request.json.get("customData", {})
+
+    client_email = data.get("client_email")
+    client_name = f"{data.get('client_first_name', '')} {data.get('client_last_name', '')}"
+
+    tabs = {
+        "textTabs": [
+            {"tabLabel": "FirstName", "value": data.get("client_first_name", "")},
+            {"tabLabel": "LastName", "value": data.get("client_last_name", "")},
+            {"tabLabel": "StreetAddress", "value": data.get("client_street", "")},
+            {"tabLabel": "City", "value": data.get("client_city", "")},
+            {"tabLabel": "State", "value": data.get("client_state", "")},
+            {"tabLabel": "PostalCode", "value": data.get("client_postal", "")},
+            {"tabLabel": "Phone", "value": data.get("client_phone", "")},
+            {"tabLabel": "Email", "value": data.get("client_email", "")},
+            {"tabLabel": "APN", "value": data.get("client_apn", "")},
+            {"tabLabel": "PurchasePrice", "value": data.get("client_price", "")},
+            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", "")}
+        ]
+    }
+
+    access_token = get_access_token()
+
+    envelope_payload = {
+        "templateId": TEMPLATE_ID,
+        "status": "sent",
+        "templateRoles": [
+            {
+                "roleName": "Client",
+                "name": client_name,
+                "email": client_email,
+                "tabs": tabs
+            }
+        ]
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    url = f"{BASE_URL}/restapi/v2.1/accounts/{ACCOUNT_ID}/envelopes"
+    response = requests.post(url, headers=headers, json=envelope_payload)
+
+    if response.status_code >= 400:
+        return jsonify({"error": response.text}), response.status_code
+
+    return jsonify(response.json()), 201
