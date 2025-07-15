@@ -494,10 +494,6 @@ def send_pandadoc():
         return {"error": "Non-JSON response from PandaDoc"}, 500
 
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
-
-
 from cryptography.hazmat.primitives import serialization
 import time, jwt
 
@@ -609,3 +605,8 @@ def send_docusign():
         return jsonify({"error": response.text}), response.status_code
 
     return jsonify(response.json()), 201
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=10000)
+
+
