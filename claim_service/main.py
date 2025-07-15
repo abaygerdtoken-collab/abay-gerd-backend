@@ -552,9 +552,6 @@ def get_access_token():
     }
 
     res = requests.post("https://account-d.docusign.com/oauth/token", headers=headers, data=data)
-    if res.status_code != 200:
-        import sys
-        print("❌ DocuSign token error:", res.status_code, res.text, file=sys.stdout, flush=True)
     res.raise_for_status()
     return res.json()["access_token"]
 
