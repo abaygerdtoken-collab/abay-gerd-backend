@@ -503,8 +503,8 @@ INTEGRATION_KEY = "c3707e9c-c61b-4aa1-a05f-247d9acdebb9"
 TEMPLATE_ID = "25cde1e9-033e-43dd-819d-cc0deb0dc900"
 BASE_URL = "https://demo.docusign.net"
 
-PRIVATE_KEY = os.environ.get("DOCUSIGN_RSA_PRIVATE_KEY")
-if not PRIVATE_KEY:
+DOCUSIGN_PRIVATE_KEY = os.environ.get("DOCUSIGN_RSA_PRIVATE_KEY")
+if not DOCUSIGN_PRIVATE_KEY:
     raise Exception("Missing DOCUSIGN_RSA_PRIVATE_KEY environment variable.")
 
 def get_access_token():
@@ -518,7 +518,7 @@ def get_access_token():
         "scope": "signature impersonation"
     }
 
-    private_key_bytes = PRIVATE_KEY.encode("utf-8")
+    private_key_bytes = DOCUSIGN_PRIVATE_KEY.encode("utf-8")
     token = jwt.encode(payload, private_key_bytes, algorithm="RS256")
 
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
