@@ -531,7 +531,6 @@ def get_access_token():
     res.raise_for_status()
     return res.json()["access_token"]
 
-
 @app.route("/webhook/send-docusign", methods=["POST"])
 def send_docusign():
     data = request.json.get("customData", {})
@@ -539,7 +538,23 @@ def send_docusign():
     client_email = data.get("client_email")
     client_name = f"{data.get('client_first_name', '')} {data.get('client_last_name', '')}"
 
-    tabs = {
+    tabs_sender = {
+        "textTabs": [
+            {"tabLabel": "FirstName", "value": data.get("client_first_name", ""), "locked": True},
+            {"tabLabel": "LastName", "value": data.get("client_last_name", ""), "locked": True},
+            {"tabLabel": "StreetAddress", "value": data.get("client_street", ""), "locked": True},
+            {"tabLabel": "City", "value": data.get("client_city", ""), "locked": True},
+            {"tabLabel": "State", "value": data.get("client_state", ""), "locked": True},
+            {"tabLabel": "PostalCode", "value": data.get("client_postal", ""), "locked": True},
+            {"tabLabel": "Phone", "value": data.get("client_phone", ""), "locked": True},
+            {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": True},
+            {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
+            {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
+            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True}
+        ]
+    }
+
+    tabs_client = {
         "textTabs": [
             {"tabLabel": "FirstName", "value": data.get("client_first_name", ""), "locked": True},
             {"tabLabel": "LastName", "value": data.get("client_last_name", ""), "locked": True},
@@ -566,14 +581,14 @@ def send_docusign():
                 "name": "KarmaExit",
                 "email": "rmgirma@gmail.com",
                 "routingOrder": "1",
-                "tabs": tabs
+                "tabs": tabs_sender
             },
             {
                 "roleName": "Client",
                 "name": client_name,
                 "email": client_email,
                 "routingOrder": "2",
-                "tabs": tabs
+                "tabs": tabs_client
             }
         ]
     }
