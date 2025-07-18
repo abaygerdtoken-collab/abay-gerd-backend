@@ -537,7 +537,7 @@ def send_docusign():
 
     client_email = data.get("client_email")
     client_name = f"{data.get('client_first_name', '')} {data.get('client_last_name', '')}"
-    client_seller_name = data.get("client_seller_name", "")
+    client_seller_name = data.get("client_seller_name")
 
     tabs_sender = {
         "textTabs": [
@@ -551,7 +551,7 @@ def send_docusign():
             {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": True},
             {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
             {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
-            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True}
+            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True},
             {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True}
         ]
     }
@@ -568,7 +568,7 @@ def send_docusign():
             {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": True},
             {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
             {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
-            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True}
+            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True},
             {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True}
         ]
     }
