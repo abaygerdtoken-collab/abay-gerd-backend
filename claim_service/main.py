@@ -551,6 +551,7 @@ def send_docusign():
             {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
             {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
             {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True}
+            {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True}
         ]
     }
 
@@ -567,6 +568,7 @@ def send_docusign():
             {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
             {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
             {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True}
+            {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True}
         ]
     }
 
@@ -585,7 +587,7 @@ def send_docusign():
             },
             {
                 "roleName": "Client",
-                "name": client_name,
+                "name": client_seller_name,
                 "email": client_email,
                 "routingOrder": "2",
                 "tabs": tabs_client
