@@ -538,6 +538,8 @@ def send_docusign():
     client_email = data.get("client_email")
     client_name = f"{data.get('client_first_name', '')} {data.get('client_last_name', '')}"
     client_seller_name = data.get("client_seller_name")
+    if not client_seller_name:
+        client_seller_name = client_name
 
     tabs_sender = {
         "textTabs": [
