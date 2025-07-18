@@ -538,19 +538,35 @@ def send_docusign():
     client_email = data.get("client_email")
     client_name = f"{data.get('client_first_name', '')} {data.get('client_last_name', '')}"
 
-    prefill_tabs = {
+    tabs_sender = {
         "textTabs": [
-            {"tabLabel": "FirstName", "value": data.get("client_first_name", "")},
-            {"tabLabel": "LastName", "value": data.get("client_last_name", "")},
-            {"tabLabel": "StreetAddress", "value": data.get("client_street", "")},
-            {"tabLabel": "City", "value": data.get("client_city", "")},
-            {"tabLabel": "State", "value": data.get("client_state", "")},
-            {"tabLabel": "PostalCode", "value": data.get("client_postal", "")},
-            {"tabLabel": "Phone", "value": data.get("client_phone", "")},
-            {"tabLabel": "Email", "value": data.get("client_email", "")},
-            {"tabLabel": "APN", "value": data.get("client_apn", "")},
-            {"tabLabel": "PurchasePrice", "value": data.get("client_price", "")},
-            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", "")}
+            {"tabLabel": "FirstName", "value": data.get("client_first_name", ""), "locked": True},
+            {"tabLabel": "LastName", "value": data.get("client_last_name", ""), "locked": True},
+            {"tabLabel": "StreetAddress", "value": data.get("client_street", ""), "locked": True},
+            {"tabLabel": "City", "value": data.get("client_city", ""), "locked": True},
+            {"tabLabel": "State", "value": data.get("client_state", ""), "locked": True},
+            {"tabLabel": "PostalCode", "value": data.get("client_postal", ""), "locked": True},
+            {"tabLabel": "Phone", "value": data.get("client_phone", ""), "locked": True},
+            {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": True},
+            {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
+            {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
+            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True}
+        ]
+    }
+
+    tabs_client = {
+        "textTabs": [
+            {"tabLabel": "FirstName", "value": data.get("client_first_name", ""), "locked": True},
+            {"tabLabel": "LastName", "value": data.get("client_last_name", ""), "locked": True},
+            {"tabLabel": "StreetAddress", "value": data.get("client_street", ""), "locked": True},
+            {"tabLabel": "City", "value": data.get("client_city", ""), "locked": True},
+            {"tabLabel": "State", "value": data.get("client_state", ""), "locked": True},
+            {"tabLabel": "PostalCode", "value": data.get("client_postal", ""), "locked": True},
+            {"tabLabel": "Phone", "value": data.get("client_phone", ""), "locked": True},
+            {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": True},
+            {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
+            {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
+            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True}
         ]
     }
 
@@ -559,19 +575,20 @@ def send_docusign():
     envelope_payload = {
         "templateId": TEMPLATE_ID,
         "status": "sent",
-        "prefillTabs": prefill_tabs,
         "templateRoles": [
             {
                 "roleName": "Sender",
                 "name": "KarmaExit",
                 "email": "rmgirma@gmail.com",
-                "routingOrder": "1"
+                "routingOrder": "1",
+                "tabs": tabs_sender
             },
             {
                 "roleName": "Client",
                 "name": client_name,
                 "email": client_email,
-                "routingOrder": "2"
+                "routingOrder": "2",
+                "tabs": tabs_client
             }
         ]
     }
@@ -588,7 +605,6 @@ def send_docusign():
         return jsonify({"error": response.text}), response.status_code
 
     return jsonify(response.json()), 201
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
