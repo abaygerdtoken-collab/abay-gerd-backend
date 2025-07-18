@@ -550,7 +550,7 @@ def send_docusign():
             {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": True},
             {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
             {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
-            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True}
+            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True},
             {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True}
         ]
     }
@@ -567,7 +567,7 @@ def send_docusign():
             {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": True},
             {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
             {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
-            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True}
+            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True},
             {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True}
         ]
     }
