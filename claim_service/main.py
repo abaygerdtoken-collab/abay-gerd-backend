@@ -507,6 +507,12 @@ DOCUSIGN_PRIVATE_KEY = os.environ.get("DOCUSIGN_RSA_PRIVATE_KEY")
 if not DOCUSIGN_PRIVATE_KEY:
     raise Exception("Missing DOCUSIGN_RSA_PRIVATE_KEY environment variable.")
 
+def format_currency(value, default="0.00"):
+    try:
+        return f"{float(str(value).replace(',', '').strip()):,.2f}"
+    except (ValueError, TypeError):
+        return f"{float(default):,.2f}"
+
 def get_access_token():
     current_time = int(time.time())
     payload = {
@@ -554,12 +560,12 @@ def send_docusign():
             {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": False},
             {
              "tabLabel": "PurchasePrice",
-             "value": f"{float(data.get('client_price', '0').replace(',', '').strip()):,.2f}",
+             "value": format_currency(data.get('client_price', "0")),
              "locked": False
             },
             {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": False},
             {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": False},
-            {"tabLabel": "Deposit", "value": f"{data.get('client_deposit', 500.0):.2f}", "locked": False}
+            {"tabLabel": "Deposit", "value": format_currency(data.get('client_deposit', "500.00")), "locked": False}
         ]
     }
 
