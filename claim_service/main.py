@@ -583,7 +583,7 @@ def send_docusign():
             {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
             {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True},
             {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True},
-            {"tabLabel": "Deposit", "value": data.get("client_deposit", ""), "locked": True}
+            {"tabLabel": "Deposit", "value": data.get("client_deposit", "500.00"), "locked": True}
         ]
     }
 
