@@ -552,9 +552,14 @@ def send_docusign():
             {"tabLabel": "Phone", "value": data.get("client_phone", ""), "locked": False},
             {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": False},
             {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": False},
-            {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": False},
+            {
+             "tabLabel": "PurchasePrice",
+             "value": f"{float(data.get('client_price', '0').replace(',', '').strip()):,.2f}",
+             "locked": False
+            },
             {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": False},
-            {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": False}
+            {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": False},
+            {"tabLabel": "Deposit", "value": f"{data.get('client_deposit', 500.0):.2f}", "locked": False}
         ]
     }
 
@@ -571,7 +576,8 @@ def send_docusign():
             {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
             {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
             {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True},
-            {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True}
+            {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True},
+            {"tabLabel": "Deposit", "value": data.get("client_deposit", ""), "locked": True}
         ]
     }
 
@@ -583,7 +589,7 @@ def send_docusign():
         "templateRoles": [
             {
                 "roleName": "Sender",
-                "name": "KarmaExit",
+                "name": "KarmaExit-Sender",
                 "email": "rmgirma@gmail.com",
                 "routingOrder": "1",
                 "tabs": tabs_sender
