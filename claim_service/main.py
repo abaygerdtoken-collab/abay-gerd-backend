@@ -518,7 +518,7 @@ def get_access_token():
     payload = {
         "iss": INTEGRATION_KEY,
         "sub": USER_ID,
-        "aud": "account-d.docusign.com",
+        "aud": "account.docusign.com",
         "iat": current_time,
         "exp": current_time + 3600,
         "scope": "signature impersonation"
@@ -533,7 +533,7 @@ def get_access_token():
         "assertion": token
     }
 
-    res = requests.post("https://account-d.docusign.com/oauth/token", headers=headers, data=data)
+    res = requests.post("https://account.docusign.com/oauth/token", headers=headers, data=data)
     res.raise_for_status()
     return res.json()["access_token"]
 
@@ -596,7 +596,7 @@ def send_docusign():
             {
                 "roleName": "Sender",
                 "name": "KarmaExit-Sender",
-                "email": "rmgirma@gmail.com",
+                "email": "ephremfuffa@gmail.com",
                 "routingOrder": "1",
                 "tabs": tabs_sender
             },
