@@ -459,32 +459,39 @@ def send_pandadoc():
     }
 
     payload = {
-        "name": f"{client_first_name} {client_last_name} Agreement",
-        "template_uuid": TEMPLATE_ID,
-        "status": "sent",  # ✅ Send immediately
-        "send_email": True,
-        "recipients": [
-            {
-                "email": client_email,
-                "first_name": client_first_name,
-                "last_name": client_last_name,
-                "role": "Client",
-                "fields": {
-                    "StreetAddress": client_street,
-                    "City": client_city,
-                    "State": client_state,
-                    "PostalCode": client_postal,
-                    "Phone": client_phone
-                }
-            },
-            {
-                "email": sender_email,
-                "first_name": sender_first_name,
-                "last_name": sender_last_name,
-                "role": "Sender"
-            }
-        ]
-    }
+    "name": f"{client_first_name} {client_last_name} Agreement",
+    "template_uuid": TEMPLATE_ID,
+    "status": "sent",
+    "send_email": True,
+    "recipients": [
+        {
+            "email": client_email,
+            "first_name": client_first_name,
+            "last_name": client_last_name,
+            "role": "Client"
+        },
+        {
+            "email": sender_email,
+            "first_name": sender_first_name,
+            "last_name": sender_last_name,
+            "role": "Sender"
+        }
+    ],
+    "tokens": [
+        {"name": "Client.FirstName", "value": client_first_name},
+        {"name": "Client.LastName", "value": client_last_name},
+        {"name": "Client.Email", "value": client_email},
+        {"name": "Client.Phone", "value": client_phone},
+        {"name": "Client.StreetAddress", "value": client_street},
+        {"name": "Client.City", "value": client_city},
+        {"name": "Client.State", "value": client_state},
+        {"name": "Client.PostalCode", "value": client_postal},
+        {"name": "Sender.FirstName", "value": sender_first_name},
+        {"name": "Sender.LastName", "value": sender_last_name},
+        {"name": "Sender.Email", "value": sender_email}
+    ]
+}
+
 
     response = requests.post(API_URL, headers=headers, json=payload)
 
