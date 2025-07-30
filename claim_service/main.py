@@ -443,6 +443,10 @@ def send_pandadoc():
     client_city = data.get('client_city', '')
     client_state = data.get('client_state', '')
     client_postal = data.get('client_postal', '')
+    client_apn = data.get('client_apn', '')
+    client_price = data.get('client_price', '')
+    client_close_date = data.get('client_close_date', '')
+    client_deposit = data.get('client_deposit', '')
 
     # SENDER data
     sender_first_name = data.get('sender_first_name', '')
@@ -459,10 +463,10 @@ def send_pandadoc():
     }
 
     payload = {
-    "name": f"{client_first_name} {client_last_name} Agreement",
+    "name": f"{client_first_name} {client_last_name} - {client_street} - Agreement",
     "template_uuid": TEMPLATE_ID,
-    "status": "sent",
-    "send_email": True,
+    "status": "Draft",
+    "send_email": False,
     "recipients": [
         {
             "email": client_email,
@@ -486,6 +490,11 @@ def send_pandadoc():
         {"name": "Client.City", "value": client_city},
         {"name": "Client.State", "value": client_state},
         {"name": "Client.PostalCode", "value": client_postal},
+        {"name": "Client.APN", "value": client_apn},
+        {"name": "Client.Price", "value": client_price},
+        {"name": "Client.CloseEscrowDate", "value": client_close_date},
+        {"name": "Client.DepositAmount", "value": client_deposit},
+
         {"name": "Sender.FirstName", "value": sender_first_name},
         {"name": "Sender.LastName", "value": sender_last_name},
         {"name": "Sender.Email", "value": sender_email}
