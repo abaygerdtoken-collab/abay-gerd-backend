@@ -638,11 +638,12 @@ def etn_callback():
     # Create session
     session_id = _create_etn_session(tokens=tokens, claims=claims, profile=profile)
 
-    # Determine frontend URL based on environment
-    if os.environ.get("RENDER", ""):
-        frontend_url = "https://www.abaygerdtoken.com/auth?etn_callback=true"
-    else:
+    # Determine frontend URL based on request origin
+    origin = request.headers.get('Origin') or request.headers.get('Referer', '')
+    if 'localhost' in origin or '127.0.0.1' in origin:
         frontend_url = "http://localhost:3000/auth?etn_callback=true"
+    else:
+        frontend_url = "https://www.abaygerdtoken.com/auth?etn_callback=true"
 
     # Redirect to frontend
     resp = redirect(frontend_url)
