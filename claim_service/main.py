@@ -2,7 +2,7 @@ import json
 import base64
 import hashlib
 from urllib.parse import urlencode
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from web3 import Web3
 import os
@@ -638,15 +638,16 @@ def etn_callback():
     # Create session
     session_id = _create_etn_session(tokens=tokens, claims=claims, profile=profile)
 
+    # Determine frontend URL based on environment
+    if os.environ.get("RENDER", ""):
+        frontend_url = "https://www.abaygerdtoken.com/auth?etn_callback=true"
+    else:
+        frontend_url = "http://localhost:3000/auth?etn_callback=true"
 
-    resp = jsonify({
-        "status": "success",
-        "sessionId": session_id,
-        "claims": claims,
-        "profile": profile,
-    })
+    # Redirect to frontend
+    resp = redirect(frontend_url)
 
-    # Optional cookie for convenience (frontend can also store sessionId)
+    # Set session cookie
     is_prod = os.environ.get("RENDER", "") != ""
 
     resp.set_cookie(
