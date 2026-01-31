@@ -564,11 +564,19 @@ def etn_login():
     nonce = secrets.token_urlsafe(24)
     code_verifier, code_challenge = _pkce_pair()
 
+        # Detect frontend URL at login time
+    origin = request.headers.get("Origin") or request.headers.get("Referer", "")
+    if "localhost" in origin or "127.0.0.1" in origin:
+        frontend_url = "http://localhost:3000"
+    else:
+        frontend_url = "https://www.abaygerdtoken.com"
+
     _save_etn_oauth_state(state, {
         "code_verifier": code_verifier,
         "nonce": nonce,
         "ip": request.headers.get("X-Forwarded-For", request.remote_addr),
         "ua": request.headers.get("User-Agent", ""),
+        "frontend_url": frontend_url,
     })
 
     params = {
@@ -638,12 +646,9 @@ def etn_callback():
     # Create session
     session_id = _create_etn_session(tokens=tokens, claims=claims, profile=profile)
 
-    # Determine frontend URL based on request origin
-    origin = request.headers.get('Origin') or request.headers.get('Referer', '')
-    if 'localhost' in origin or '127.0.0.1' in origin:
-        frontend_url = "http://localhost:3000/auth?etn_callback=true"
-    else:
-        frontend_url = "https://www.abaygerdtoken.com/auth?etn_callback=true"
+        # Use frontend URL saved during /auth/etn/login
+    frontend_base = st.get("frontend_url", "https://www.abaygerdtoken.com")
+    frontend_url = f"{frontend_base}/auth?etn_callback=true"
 
     # Redirect to frontend
     resp = redirect(frontend_url)
