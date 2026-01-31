@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from web3 import Web3
+from eth_keys import keys
 import os
 import requests
 import firebase_admin
@@ -636,8 +637,14 @@ def etn_callback():
     if not user_sub:
         return jsonify({"status": "error", "message": "ETN id_token missing 'sub'"}), 400
 
-    # Minimal session state: only store sub (no roles/is_og/profile for now)
-    claims = {"sub": user_sub}
+    # Derive deterministic BSC wallet address from user_sub (same pattern as Web3Auth)
+    # This ensures the same user always gets the same wallet address
+    private_key_bytes = hashlib.sha256(user_sub.encode()).digest()
+    private_key_obj = keys.PrivateKey(private_key_bytes)
+    wallet_address = private_key_obj.public_key.to_checksum_address()
+
+    # Minimal session state: store sub and derived wallet address
+    claims = {"sub": user_sub, "wallet_address": wallet_address}
     profile = {}  # not needed for wallet creation / claims
 
     # Create session
@@ -671,7 +678,8 @@ def etn_me():
         return jsonify({"status": "error", "message": "Missing session"}), 401
 
     sess = _get_etn_session(session_id)
-    if not sess:
+    if not sess:,
+      "wallet_address": claims.get("wallet_address")
         return jsonify({"status": "error", "message": "Invalid session"}), 401
 
     claims = sess.get("claims", {})
