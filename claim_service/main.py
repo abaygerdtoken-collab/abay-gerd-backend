@@ -14,7 +14,7 @@ import secrets
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {
-    "origins": ["https://www.abaygerdtoken.com", "http://localhost:3000"],
+    "origins": ["https://www.abaygerdtoken.com", "https://abaygerdtoken.com"],
     "supports_credentials": True
 }})
 
@@ -565,11 +565,8 @@ def etn_login():
     code_verifier, code_challenge = _pkce_pair()
 
         # Detect frontend URL at login time
-    origin = request.headers.get("Origin") or request.headers.get("Referer", "")
-    if "localhost" in origin or "127.0.0.1" in origin:
-        frontend_url = "http://localhost:3000"
-    else:
-        frontend_url = "https://www.abaygerdtoken.com"
+    
+    frontend_url = "https://www.abaygerdtoken.com"
 
     _save_etn_oauth_state(state, {
         "code_verifier": code_verifier,
@@ -660,8 +657,8 @@ def etn_callback():
         "etn_session",
         session_id,
         httponly=True,
-        secure=is_prod,
-        samesite="Lax",
+        secure=True,
+        samesite="None",
         max_age=60 * 60 * 24 * 30,
     )
     return resp
