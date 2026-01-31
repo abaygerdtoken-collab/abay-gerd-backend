@@ -1,4 +1,7 @@
-
+import json
+import base64
+import hashlib
+from urllib.parse import urlencode
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from web3 import Web3
@@ -10,7 +13,7 @@ from datetime import datetime, timedelta, date
 import secrets
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "https://www.abaygerdtoken.com"}})
+CORS(app, resources={r"/*": {"origins": ["https://www.abaygerdtoken.com", "http://localhost:3000"]}})
 
 WEB3_PROVIDER = os.environ.get("WEB3_PROVIDER")
 PRIVATE_KEY = os.environ.get("PRIVATE_KEY")
@@ -289,7 +292,10 @@ TOKEN_ABI = [{
 token_contract = web3.eth.contract(address=TOKEN_CONTRACT_ADDRESS, abi=TOKEN_ABI)
 
 cred_path = os.environ.get("FIREBASE_CRED_PATH")
+if not cred_path or not os.path.exists(cred_path):
+    raise Exception("FIREBASE_CRED_PATH is missing or invalid")
 cred = credentials.Certificate(cred_path)
+
 
 firebase_admin.initialize_app(cred)
 db = firestore.client()
@@ -309,8 +315,9 @@ def generate_session_token():
 
 @app.route('/send-token', methods=['POST'])
 def send_token():
+    data = {} 
     try:
-        data = request.json
+        data = request.get_json(silent=True) or {}
 
         session_token = data.get('session_token')
         if not session_token or session_token not in session_tokens:
@@ -325,10 +332,11 @@ def send_token():
             return jsonify({'status': 'error', 'message': 'Please complete reCAPTCHA'}), 400
 
         verify_url = "https://www.google.com/recaptcha/api/siteverify"
-        recaptcha_verify = requests.post(verify_url, data={
-            'secret': RECAPTCHA_SECRET_KEY,
-            'response': recaptcha_response
-        }).json()
+        recaptcha_verify = requests.post(
+            verify_url,
+            data={'secret': RECAPTCHA_SECRET_KEY, 'response': recaptcha_response},
+            timeout=10
+        ).json()
 
         if not recaptcha_verify.get('success'):
             return jsonify({'status': 'error', 'message': 'Invalid reCAPTCHA'}), 400
@@ -353,14 +361,14 @@ def send_token():
 
         try:
             ipinfo_url = f'https://ipinfo.io/{user_ip}?token={IPINFO_TOKEN}'
-            location_data = requests.get(ipinfo_url).json()
+            location_data = requests.get(ipinfo_url, timeout=5).json()
             country_code = location_data.get('country', '')
             city = location_data.get('city', '')
         except Exception:
             pass
 
         try:
-            fallback_data = requests.get(f'https://ipapi.co/{user_ip}/json/').json()
+            fallback_data = requests.get(f'https://ipapi.co/{user_ip}/json/', timeout=5).json()
             if not country_code:
                 country_code = fallback_data.get('country_code', '')
             country_name = fallback_data.get('country_name', '')
@@ -428,216 +436,310 @@ def send_token():
         })
         return jsonify({'status': 'error', 'message': str(e)}), 400
 
-@app.route('/webhook/send-doc', methods=['POST'])
-def send_pandadoc():
-    import sys
-    data = request.json.get('customData', {})  # ✅ Get correct sub-payload from GHL
-    print("📦 Incoming customData Payload:", data, file=sys.stdout, flush=True)
+# ==========================================================
+# ETN Identity OAuth (Authorization Code + PKCE)
+# ==========================================================
 
-    # CLIENT data
-    client_first_name = data.get('client_first_name', '')
-    client_last_name = data.get('client_last_name', '')
-    client_email = data.get('client_email', '')
-    client_phone = data.get('client_phone', '')
-    client_street = data.get('client_street', '')
-    client_city = data.get('client_city', '')
-    client_state = data.get('client_state', '')
-    client_postal = data.get('client_postal', '')
-    client_apn = data.get('client_apn', '')
-    client_price = data.get('client_price', '')
-    client_close_date = data.get('client_close_date', '')
-    client_deposit = data.get('client_deposit', '')
+ETN_CLIENT_ID = os.environ.get("ETN_CLIENT_ID")
+ETN_CLIENT_SECRET = os.environ.get("ETN_CLIENT_SECRET")
+ETN_REDIRECT_URI = os.environ.get("ETN_REDIRECT_URI")
+ETN_SCOPE = os.environ.get("ETN_SCOPE", "openid profile offline_access")
 
-    # SENDER data
-    sender_first_name = data.get('sender_first_name', '')
-    sender_last_name = data.get('sender_last_name', '')
-    sender_email = data.get('sender_email', '')
+# Provided by you (ETN Developer Portal)
+ETN_AUTHORIZE_URL = os.environ.get("ETN_AUTHORIZE_URL", "https://account.etnecosystem.org/authorize")
 
-    PANDADOC_API_KEY = os.environ.get("PANDADOC_API_KEY")
-    TEMPLATE_ID = os.environ.get("PANDADOC_TEMPLATE_ID")
-    API_URL = 'https://api.pandadoc.com/public/v1/documents'
+# Common ETN endpoints (override via env vars if ETN provides different ones)
+ETN_TOKEN_URL = os.environ.get("ETN_TOKEN_URL", "https://auth.etnecosystem.org/api/v1/oauth/token")
 
-    headers = {
-        'Authorization': f'API-Key {PANDADOC_API_KEY}',
-        'Content-Type': 'application/json'
-    }
-
-    payload = {
-    "name": f"{client_first_name} {client_last_name} - {client_street} - Agreement",
-    "template_uuid": TEMPLATE_ID,
-    "status": "Draft",
-    "send_email": False,
-    "recipients": [
-        {
-            "email": client_email,
-            "first_name": client_first_name,
-            "last_name": client_last_name,
-            "role": "Client"
-        },
-        {
-            "email": sender_email,
-            "first_name": sender_first_name,
-            "last_name": sender_last_name,
-            "role": "Sender"
-        }
-    ],
-    "tokens": [
-        {"name": "Client.FirstName", "value": client_first_name},
-        {"name": "Client.LastName", "value": client_last_name},
-        {"name": "Client.Email", "value": client_email},
-        {"name": "Client.Phone", "value": client_phone},
-        {"name": "Client.StreetAddress", "value": client_street},
-        {"name": "Client.City", "value": client_city},
-        {"name": "Client.State", "value": client_state},
-        {"name": "Client.PostalCode", "value": client_postal},
-        {"name": "Client.APN", "value": client_apn},
-        {"name": "Client.Price", "value": client_price},
-        {"name": "Client.CloseEscrowDate", "value": client_close_date},
-        {"name": "Client.DepositAmount", "value": client_deposit},
-
-        {"name": "Sender.FirstName", "value": sender_first_name},
-        {"name": "Sender.LastName", "value": sender_last_name},
-        {"name": "Sender.Email", "value": sender_email}
-    ]
-}
+def _require_etn_env():
+    missing = []
+    if not ETN_CLIENT_ID:
+        missing.append("ETN_CLIENT_ID")
+    if not ETN_CLIENT_SECRET:
+        missing.append("ETN_CLIENT_SECRET")
+    if not ETN_REDIRECT_URI:
+        missing.append("ETN_REDIRECT_URI")
+    return missing
 
 
-    response = requests.post(API_URL, headers=headers, json=payload)
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
 
+
+def _pkce_pair():
+    # RFC 7636 S256
+    code_verifier = _b64url(secrets.token_bytes(32))
+    code_challenge = _b64url(hashlib.sha256(code_verifier.encode("utf-8")).digest())
+    return code_verifier, code_challenge
+
+
+def _decode_jwt_no_verify(jwt_token: str) -> dict:
+    """
+    Minimal JWT decode (no signature verification).
+    ETN requires you to read is_og instantly from id_token for business logic.
+    If you want, we can add JWKS signature verification next.
+    """
     try:
-        return jsonify(response.json()), response.status_code
+        parts = jwt_token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload_b64 = parts[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload_json = base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8")
+        return json.loads(payload_json)
     except Exception:
-        return {"error": "Non-JSON response from PandaDoc"}, 500
+        return {}
 
 
-from cryptography.hazmat.primitives import serialization
-import time, jwt
+def _save_etn_oauth_state(state: str, data: dict, ttl_minutes: int = 10):
+    expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+    db.collection("etn_oauth_states").document(state).set({
+        **data,
+        "expiresAt": expires_at,
+        "createdAt": datetime.utcnow(),
+    })
 
-USER_ID = "aee6ec85-0785-481e-88fc-76d86997c9f2"
-ACCOUNT_ID = "9dc45c0a-8409-49e6-8d87-04dbb7cb5137"
-INTEGRATION_KEY = "c3707e9c-c61b-4aa1-a05f-247d9acdebb9"
-TEMPLATE_ID = "773bc8b8-9ae7-415e-8fc5-2e36812e4d0b"
-BASE_URL = "https://na4.docusign.net"
 
-DOCUSIGN_PRIVATE_KEY = os.environ.get("DOCUSIGN_RSA_PRIVATE_KEY")
-if not DOCUSIGN_PRIVATE_KEY:
-    raise Exception("Missing DOCUSIGN_RSA_PRIVATE_KEY environment variable.")
-
-def format_currency(value, default="0.00"):
+def _consume_etn_oauth_state(state: str):
+    ref = db.collection("etn_oauth_states").document(state)
+    snap = ref.get()
+    if not snap.exists:
+        return None
+    data = snap.to_dict()
+    ref.delete()  # one-time
+    exp = data.get("expiresAt")
     try:
-        return f"{float(str(value).replace(',', '').strip()):,.2f}"
-    except (ValueError, TypeError):
-        return f"{float(default):,.2f}"
+        if exp and exp < datetime.utcnow():
+            return None
+    except Exception:
+        pass
+    return data
 
-def get_access_token():
-    current_time = int(time.time())
+
+def _create_etn_session(tokens: dict, claims: dict, profile: dict, ttl_days: int = 30) -> str:
+    session_id = secrets.token_urlsafe(32)
+    expires_at = datetime.utcnow() + timedelta(days=ttl_days)
+    db.collection("etn_sessions").document(session_id).set({
+        "tokens": tokens,
+        "claims": claims,
+        "profile": profile,
+        "expiresAt": expires_at,
+        "createdAt": datetime.utcnow(),
+    })
+    return session_id
+
+def _get_etn_session(session_id: str):
+    snap = db.collection("etn_sessions").document(session_id).get()
+    if not snap.exists:
+        return None
+    data = snap.to_dict()
+    exp = data.get("expiresAt")
+    try:
+        if exp and exp < datetime.utcnow():
+            db.collection("etn_sessions").document(session_id).delete()
+            return None
+    except Exception:
+        pass
+    return data
+
+def _update_etn_session(session_id: str, tokens: dict, claims: dict, profile: dict):
+    db.collection("etn_sessions").document(session_id).set({
+        "tokens": tokens,
+        "claims": claims,
+        "profile": profile,
+        "updatedAt": datetime.utcnow(),
+    }, merge=True)
+
+@app.route("/auth/etn/login", methods=["GET"])
+def etn_login():
+    missing = _require_etn_env()
+    if missing:
+        return jsonify({"status": "error", "message": "Missing ETN env vars", "missing": missing}), 500
+
+    # Create OAuth params
+    state = secrets.token_urlsafe(24)
+    nonce = secrets.token_urlsafe(24)
+    code_verifier, code_challenge = _pkce_pair()
+
+    _save_etn_oauth_state(state, {
+        "code_verifier": code_verifier,
+        "nonce": nonce,
+        "ip": request.headers.get("X-Forwarded-For", request.remote_addr),
+        "ua": request.headers.get("User-Agent", ""),
+    })
+
+    params = {
+        "response_type": "code",
+        "client_id": ETN_CLIENT_ID,
+        "redirect_uri": ETN_REDIRECT_URI,
+        "scope": ETN_SCOPE,
+        "state": state,
+        "nonce": nonce,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+
+    authorize_url = f"{ETN_AUTHORIZE_URL}?{urlencode(params)}"
+    return jsonify({"authorizeUrl": authorize_url})
+
+
+@app.route("/auth/etn/callback", methods=["GET"])
+def etn_callback():
+    missing = _require_etn_env()
+    if missing:
+        return jsonify({"status": "error", "message": "Missing ETN env vars", "missing": missing}), 500
+
+    err = request.args.get("error")
+    if err:
+        return jsonify({"status": "error", "error": err, "error_description": request.args.get("error_description")}), 400
+
+    code = request.args.get("code")
+    state = request.args.get("state")
+    if not code or not state:
+        return jsonify({"status": "error", "message": "Missing code or state"}), 400
+
+    st = _consume_etn_oauth_state(state)
+    if not st:
+        return jsonify({"status": "error", "message": "Invalid or expired state"}), 400
+
+    # Exchange code -> tokens
     payload = {
-        "iss": INTEGRATION_KEY,
-        "sub": USER_ID,
-        "aud": "account.docusign.com",
-        "iat": current_time,
-        "exp": current_time + 3600,
-        "scope": "signature impersonation"
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": ETN_CLIENT_ID,
+        "client_secret": ETN_CLIENT_SECRET,
+        "redirect_uri": ETN_REDIRECT_URI,
+        "code_verifier": st.get("code_verifier"),
     }
 
-    private_key_bytes = DOCUSIGN_PRIVATE_KEY.encode("utf-8")
-    token = jwt.encode(payload, private_key_bytes, algorithm="RS256")
+    r = requests.post(ETN_TOKEN_URL, json=payload, timeout=20)
+    try:
+        tokens = r.json()
+    except Exception:
+        return jsonify({"status": "error", "message": "Token exchange returned non-JSON", "http_status": r.status_code, "body": r.text[:300]}), 502
 
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    data = {
-        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        "assertion": token
+    if r.status_code >= 400 or tokens.get("error"):
+        return jsonify({"status": "error", "message": "Token exchange failed", "details": tokens}), 400
+
+    # Decode id_token ONLY to extract stable ETN user id (sub)
+    raw_claims = _decode_jwt_no_verify(tokens.get("id_token", ""))
+    user_sub = raw_claims.get("sub")
+
+    if not user_sub:
+        return jsonify({"status": "error", "message": "ETN id_token missing 'sub'"}), 400
+
+    # Minimal session state: only store sub (no roles/is_og/profile for now)
+    claims = {"sub": user_sub}
+    profile = {}  # not needed for wallet creation / claims
+
+    # Create session
+    session_id = _create_etn_session(tokens=tokens, claims=claims, profile=profile)
+
+
+    resp = jsonify({
+        "status": "success",
+        "sessionId": session_id,
+        "claims": claims,
+        "profile": profile,
+    })
+
+    # Optional cookie for convenience (frontend can also store sessionId)
+    is_prod = os.environ.get("RENDER", "") != ""
+
+    resp.set_cookie(
+        "etn_session",
+        session_id,
+        httponly=True,
+        secure=is_prod,
+        samesite="Lax",
+        max_age=60 * 60 * 24 * 30,
+    )
+    return resp
+
+
+@app.route("/auth/etn/me", methods=["GET"])
+def etn_me():
+    session_id = request.cookies.get("etn_session") or request.args.get("sessionId")
+    if not session_id:
+        return jsonify({"status": "error", "message": "Missing session"}), 401
+
+    sess = _get_etn_session(session_id)
+    if not sess:
+        return jsonify({"status": "error", "message": "Invalid session"}), 401
+
+    claims = sess.get("claims", {})
+    return jsonify({
+      "status": "success",
+      "sub": claims.get("sub")
+    })
+
+
+
+@app.route("/auth/etn/refresh", methods=["POST"])
+def etn_refresh():
+    missing = _require_etn_env()
+    if missing:
+        return jsonify({"status": "error", "message": "Missing ETN env vars", "missing": missing}), 500
+    body = request.get_json(silent=True) or {}
+    session_id = request.cookies.get("etn_session") or body.get("sessionId")
+    if not session_id:
+        return jsonify({"status": "error", "message": "Missing session"}), 401
+
+    sess = _get_etn_session(session_id)
+    if not sess:
+        return jsonify({"status": "error", "message": "Invalid session"}), 401
+
+    tokens = sess.get("tokens", {})
+    refresh_token = tokens.get("refresh_token")
+    if not refresh_token:
+        return jsonify({"status": "error", "message": "No refresh_token available (offline_access missing?)"}), 400
+
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": ETN_CLIENT_ID,
+        "client_secret": ETN_CLIENT_SECRET,
     }
 
-    res = requests.post("https://account.docusign.com/oauth/token", headers=headers, data=data)
-    res.raise_for_status()
-    return res.json()["access_token"]
+    r = requests.post(ETN_TOKEN_URL, json=payload, timeout=20)
+    try:
+        new_tokens = r.json()
+    except Exception:
+        return jsonify({"status": "error", "message": "Refresh returned non-JSON", "http_status": r.status_code, "body": r.text[:300]}), 502
 
-@app.route("/webhook/send-docusign", methods=["POST"])
-def send_docusign():
-    data = request.json.get("customData", {})
+    if r.status_code >= 400 or new_tokens.get("error"):
+        return jsonify({"status": "error", "message": "Refresh failed", "details": new_tokens}), 400
 
-    client_email = data.get("client_email")
-    client_name = f"{data.get('client_first_name', '')} {data.get('client_last_name', '')}"
-    client_seller_name = data.get("client_seller_name")
-    if not client_seller_name:
-        client_seller_name = client_name
+    merged = {**tokens, **new_tokens}
 
-    tabs_sender = {
-        "textTabs": [
-            {"tabLabel": "FirstName", "value": data.get("client_first_name", ""), "locked": False },
-            {"tabLabel": "LastName", "value": data.get("client_last_name", ""), "locked": False},
-            {"tabLabel": "StreetAddress", "value": data.get("client_street", ""), "locked": False},
-            {"tabLabel": "City", "value": data.get("client_city", ""), "locked": False},
-            {"tabLabel": "State", "value": data.get("client_state", ""), "locked": False},
-            {"tabLabel": "PostalCode", "value": data.get("client_postal", ""), "locked": False},
-            {"tabLabel": "Phone", "value": data.get("client_phone", ""), "locked": False},
-            {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": False},
-            {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": False},
-            {
-             "tabLabel": "PurchasePrice",
-             "value": format_currency(data.get('client_price', "0")),
-             "locked": False
-            },
-            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": False},
-            {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": False},
-            {"tabLabel": "Deposit", "value": format_currency(data.get('client_deposit', "500.00")), "locked": False}
-        ]
-    }
+    # Update sub if token rotated (rare, but keep safe)
+    claims = sess.get("claims", {})
+    if merged.get("id_token"):
+        raw_claims = _decode_jwt_no_verify(merged["id_token"])
+        if raw_claims.get("sub"):
+            claims = {"sub": raw_claims["sub"]}
 
-    tabs_client = {
-        "textTabs": [
-            {"tabLabel": "FirstName", "value": data.get("client_first_name", ""), "locked": True},
-            {"tabLabel": "LastName", "value": data.get("client_last_name", ""), "locked": True},
-            {"tabLabel": "StreetAddress", "value": data.get("client_street", ""), "locked": True},
-            {"tabLabel": "City", "value": data.get("client_city", ""), "locked": True},
-            {"tabLabel": "State", "value": data.get("client_state", ""), "locked": True},
-            {"tabLabel": "PostalCode", "value": data.get("client_postal", ""), "locked": True},
-            {"tabLabel": "Phone", "value": data.get("client_phone", ""), "locked": True},
-            {"tabLabel": "Email", "value": data.get("client_email", ""), "locked": True},
-            {"tabLabel": "APN", "value": data.get("client_apn", ""), "locked": True},
-            {"tabLabel": "PurchasePrice", "value": data.get("client_price", ""), "locked": True},
-            {"tabLabel": "CloseOfEscrow", "value": data.get("client_close_date", ""), "locked": True},
-            {"tabLabel": "SellerName", "value": data.get("client_seller_name", ""), "locked": True},
-            {"tabLabel": "Deposit", "value": data.get("client_deposit", "500.00"), "locked": True}
-        ]
-    }
+    profile = {}  # still not needed
 
-    access_token = get_access_token()
 
-    envelope_payload = {
-        "templateId": TEMPLATE_ID,
-        "status": "sent",
-        "templateRoles": [
-            {
-                "roleName": "Sender",
-                "name": "KarmaExit-Sender",
-                "email": "ephremfuffa@gmail.com",
-                "routingOrder": "1",
-                "tabs": tabs_sender
-            },
-            {
-                "roleName": "Client",
-                "name": client_seller_name,
-                "email": client_email,
-                "routingOrder": "2",
-                "tabs": tabs_client
-            }
-        ]
-    }
+    _update_etn_session(session_id=session_id, tokens=merged, claims=claims, profile=profile)
 
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
+    return jsonify({"status": "success", "claims": claims, "profile": profile})
 
-    url = f"{BASE_URL}/restapi/v2.1/accounts/{ACCOUNT_ID}/envelopes"
-    response = requests.post(url, headers=headers, json=envelope_payload)
 
-    if response.status_code >= 400:
-        return jsonify({"error": response.text}), response.status_code
+@app.route("/auth/etn/logout", methods=["POST"])
+def etn_logout():
+    body = request.get_json(silent=True) or {}
+    session_id = request.cookies.get("etn_session") or body.get("sessionId")
+    if session_id:
+        db.collection("etn_sessions").document(session_id).delete()
 
-    return jsonify(response.json()), 201
+    resp = jsonify({"status": "success"})
+    resp.set_cookie("etn_session", "", expires=0)
+    return resp
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
+

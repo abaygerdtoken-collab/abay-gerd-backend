@@ -5,7 +5,7 @@ services:
     plan: free
     rootDir: claim_service
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python main.py"
+    startCommand: "gunicorn main:app --bind 0.0.0.0:$PORT"
     envVars:
       - key: WEB3_PROVIDER
         sync: false
@@ -23,8 +23,15 @@ services:
         sync: false
       - key: FIREBASE_CRED_PATH
         sync: false
-      - key: PANDADOC_API_KEY
+      - key: ETN_CLIENT_ID
         sync: false
-      - key: PANDADOC_TEMPLATE_ID
+      - key: ETN_CLIENT_SECRET
         sync: false
-
+      - key: ETN_REDIRECT_URI
+        sync: false
+      - key: ETN_SCOPE
+        sync: false
+      - key: ETN_AUTHORIZE_URL
+        sync: false
+      - key: ETN_TOKEN_URL
+        sync: false
