@@ -678,16 +678,15 @@ def etn_me():
         return jsonify({"status": "error", "message": "Missing session"}), 401
 
     sess = _get_etn_session(session_id)
-    if not sess:,
-      "wallet_address": claims.get("wallet_address")
+    if not sess:
         return jsonify({"status": "error", "message": "Invalid session"}), 401
 
     claims = sess.get("claims", {})
     return jsonify({
       "status": "success",
-      "sub": claims.get("sub")
+      "sub": claims.get("sub"),
+      "wallet_address": claims.get("wallet_address")
     })
-
 
 
 @app.route("/auth/etn/refresh", methods=["POST"])
