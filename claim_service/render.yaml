@@ -2,7 +2,6 @@ services:
   - type: web
     name: gerd-claim-api
     env: python
-    plan: free
     rootDir: claim_service
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn main:app --bind 0.0.0.0:$PORT"
@@ -35,3 +34,36 @@ services:
         sync: false
       - key: ETN_TOKEN_URL
         sync: false
+      # ===== TradingView → MEXC Executor =====
+      - key: TV_PASSPHRASE
+        sync: false
+
+      - key: MEXC_API_KEY
+        sync: false
+
+      - key: MEXC_API_SECRET
+        sync: false
+
+      - key: MEXC_FUTURES_BASE
+        value: "https://contract.mexc.com"
+
+      - key: DRY_RUN
+        value: "true"   # set to false after testing
+
+      - key: TRADING_ENABLED
+        value: "true"
+
+      - key: ALLOWED_SYMBOLS
+        value: "BTCUSDT,ETHUSDT"
+
+      - key: MAX_SIGNAL_AGE_SEC
+        value: "90"
+
+      - key: COOLDOWN_SECONDS
+        value: "10"
+
+      - key: RECV_WINDOW_MS
+        value: "10000"
+
+      - key: PRICE_PROTECT
+        value: "1"

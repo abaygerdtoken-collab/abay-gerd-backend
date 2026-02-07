@@ -2,6 +2,7 @@ Flask==2.3.3
 web3==6.10.0
 flask-cors==4.0.0
 requests==2.31.0
+urllib3==2.1.0
 firebase-admin==6.4.0
 python-dotenv==1.0.1
 gunicorn==21.2.0
