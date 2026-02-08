@@ -28,7 +28,7 @@ CORS(app, resources={r"/*": {
 TV_PASSPHRASE = os.getenv("TV_PASSPHRASE", "")
 MEXC_API_KEY = os.getenv("MEXC_API_KEY", "")
 MEXC_API_SECRET = os.getenv("MEXC_API_SECRET", "")
-MEXC_FUTURES_BASE = os.getenv("MEXC_FUTURES_BASE", "https://contract.mexc.com")
+MEXC_FUTURES_BASE = os.getenv("MEXC_FUTURES_BASE", "https://api.mexc.com")
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
 ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT").split(","))
@@ -44,7 +44,7 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 def _to_mexc_symbol(tv_symbol: str) -> str:
-    s = tv_symbol.upper().replace("-", "").replace("/", "")
+    s = tv_symbol.upper().replace(".P", "").replace("-", "").replace("/", "")
     if s.endswith("USDT") and "_" not in s:
         return s[:-4] + "_USDT"
     return s
@@ -96,12 +96,16 @@ def _mexc_request(method: str, path: str, params=None, body=None):
     signature = _hmac_sha256_hex(MEXC_API_SECRET, sign_payload)
 
     url = f"{MEXC_FUTURES_BASE}{path}"
+
+    # MEXC expects the recv window in SECONDS (1..60), and the header key is Revc-Window
+    recv_window_sec = max(1, min(60, int(RECV_WINDOW_MS / 1000)))
+
     headers = {
         "Content-Type": "application/json",
         "ApiKey": MEXC_API_KEY,
         "Request-Time": ts,
         "Signature": signature,
-        "Recv-Window": str(RECV_WINDOW_MS),
+        "Revc-Window": str(recv_window_sec),
     }
 
     if DRY_RUN:
@@ -141,9 +145,10 @@ def _validate_tv_payload(p: dict) -> dict:
     if p.get("passphrase") != TV_PASSPHRASE:
         raise Exception("Invalid passphrase")
 
-    symbol_tv = str(p.get("symbol", "")).upper()
+    symbol_tv = str(p.get("symbol", "")).upper().replace(".P", "")
     if symbol_tv not in ALLOWED_SYMBOLS:
         raise Exception(f"Symbol not allowed: {symbol_tv}")
+
 
     if not _cooldown_ok(symbol_tv):
         raise Exception(f"Cooldown active for {symbol_tv}")
@@ -556,7 +561,7 @@ def tv_trade():
         resp = _mexc_request("POST", "/api/v1/private/order/submit", body=body)
 
         # Cooldown should use the validated TV symbol (not raw payload)
-        _set_cooldown(data.get("symbol_tv", payload.get("symbol", "")).upper().replace(".P", ""))
+        _set_cooldown(data["symbol_tv"])
 
         return jsonify({
             "accepted": True,
