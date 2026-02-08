@@ -510,18 +510,32 @@ def home():
 
 @app.route("/webhook/tv_trade", methods=["POST"])
 def tv_trade():
+    payload = request.get_json(silent=True) or {}
+
+    # Log payload safely (don’t leak passphrase)
+    safe_payload = dict(payload)
+    if "passphrase" in safe_payload:
+        safe_payload["passphrase"] = "***"
+    print("TV PAYLOAD:", safe_payload)
+
+    # Kill switch
+    if os.getenv("TRADING_ENABLED", "true").lower() != "true":
+        return jsonify({"accepted": False, "error": "Trading disabled (TRADING_ENABLED!=true)"}), 403
+
     try:
-        payload = request.get_json(silent=True) or {}
-
-        # Kill switch (no redeploy needed)
-        if os.getenv("TRADING_ENABLED", "true").lower() != "true":
-            return jsonify({"accepted": False, "error": "Trading disabled (TRADING_ENABLED!=true)"}), 403
-
         data = _validate_tv_payload(payload)
 
+        # Duplicate protection (return 409 instead of generic 400)
+        if _is_dup_oid(data["clientOrderId"]):
+            return jsonify({"accepted": False, "error": "Duplicate clientOrderId"}), 409
 
-        # idempotency BEFORE exchange call
+        # Record the client OID before exchange call
         _remember_oid(data["clientOrderId"])
+
+        # Optional hard cap (strongly recommended)
+        max_qty = float(os.getenv("MAX_QTY", "999999999"))
+        if float(data["qty"]) > max_qty:
+            return jsonify({"accepted": False, "error": f"qty exceeds MAX_QTY ({max_qty})"}), 400
 
         body = {
             "symbol": data["symbol"],
@@ -540,18 +554,21 @@ def tv_trade():
         }
 
         resp = _mexc_request("POST", "/api/v1/private/order/submit", body=body)
-        _set_cooldown(payload["symbol"].upper())
+
+        # Cooldown should use the validated TV symbol (not raw payload)
+        _set_cooldown(data.get("symbol_tv", payload.get("symbol", "")).upper().replace(".P", ""))
 
         return jsonify({
             "accepted": True,
             "normalized": data,
             "mexc": resp,
             "dry_run": DRY_RUN
-        })
+        }), 200
 
     except Exception as e:
+        # Log exact reason so you can debug 400s from Render logs
+        print("TV ERROR:", str(e))
         return jsonify({"accepted": False, "error": str(e)}), 400
-
 
 @app.route('/auth/session', methods=['GET'])
 def generate_session_token():
