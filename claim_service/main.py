@@ -31,7 +31,7 @@ MEXC_API_SECRET = os.getenv("MEXC_API_SECRET", "")
 MEXC_FUTURES_BASE = os.getenv("MEXC_FUTURES_BASE", "https://api.mexc.com")
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
-ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT").split(","))
+ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "BTC_USDT,ETH_USDT").split(","))
 RECV_WINDOW_MS = int(os.getenv("RECV_WINDOW_MS", "10000"))
 MAX_SIGNAL_AGE_SEC = int(os.getenv("MAX_SIGNAL_AGE_SEC", "90"))
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "10"))
