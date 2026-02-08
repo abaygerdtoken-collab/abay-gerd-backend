@@ -557,6 +557,7 @@ def tv_trade():
             "profitTrend": 1,
             "priceProtect": PRICE_PROTECT,
         }
+        print("MEXC ORDER BODY:", body)
 
         resp = _mexc_request("POST", "/api/v1/private/order/submit", body=body)
 
