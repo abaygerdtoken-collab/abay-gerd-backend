@@ -12,12 +12,210 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime, timedelta, date
 import secrets
+import hmac
+import time
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {
     "origins": ["https://www.abaygerdtoken.com", "https://abaygerdtoken.com"],
     "supports_credentials": True
 }})
+
+# ==========================================================
+# TradingView -> MEXC Executor (in-memory idempotency)
+# ==========================================================
+
+TV_PASSPHRASE = os.getenv("TV_PASSPHRASE", "")
+MEXC_API_KEY = os.getenv("MEXC_API_KEY", "")
+MEXC_API_SECRET = os.getenv("MEXC_API_SECRET", "")
+MEXC_FUTURES_BASE = os.getenv("MEXC_FUTURES_BASE", "https://contract.mexc.com")
+DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
+
+ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT").split(","))
+RECV_WINDOW_MS = int(os.getenv("RECV_WINDOW_MS", "10000"))
+MAX_SIGNAL_AGE_SEC = int(os.getenv("MAX_SIGNAL_AGE_SEC", "90"))
+COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "10"))
+PRICE_PROTECT = int(os.getenv("PRICE_PROTECT", "1"))
+
+_last_trade_ts = {}      # symbol -> last trade time
+_seen_client_oids = {}   # oid -> first seen time
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+def _to_mexc_symbol(tv_symbol: str) -> str:
+    s = tv_symbol.upper().replace("-", "").replace("/", "")
+    if s.endswith("USDT") and "_" not in s:
+        return s[:-4] + "_USDT"
+    return s
+
+def _cooldown_ok(symbol: str) -> bool:
+    ts = _last_trade_ts.get(symbol, 0.0)
+    return (time.time() - ts) >= COOLDOWN_SECONDS
+
+def _set_cooldown(symbol: str):
+    _last_trade_ts[symbol] = time.time()
+
+def _is_dup_oid(oid: str) -> bool:
+    return oid in _seen_client_oids
+
+def _remember_oid(oid: str):
+    _seen_client_oids[oid] = time.time()
+    cutoff = time.time() - 24 * 3600
+    for k, v in list(_seen_client_oids.items()):
+        if v < cutoff:
+            _seen_client_oids.pop(k, None)
+
+def _hmac_sha256_hex(secret: str, msg: str) -> str:
+    return hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
+
+def _mexc_request(method: str, path: str, params=None, body=None):
+    """
+    MEXC Futures OPEN-API signing (headers-based).
+    - GET/DELETE: sign sorted querystring
+    - POST: sign raw JSON string and send the exact same bytes
+    """
+    if not DRY_RUN and (not MEXC_API_KEY or not MEXC_API_SECRET):
+        raise Exception("Missing MEXC_API_KEY / MEXC_API_SECRET")
+
+    params = params or {}
+    body = body or {}
+    ts = str(_now_ms())
+
+    raw_json = None  # only used for POST
+
+    if method.upper() in ("GET", "DELETE"):
+        items = [(k, params[k]) for k in sorted(params.keys()) if params[k] is not None]
+        param_str = "&".join([f"{k}={v}" for k, v in items])
+    else:
+        body = {k: v for k, v in body.items() if v is not None}
+        raw_json = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        param_str = raw_json
+
+    sign_payload = f"{MEXC_API_KEY}{ts}{param_str}"
+    signature = _hmac_sha256_hex(MEXC_API_SECRET, sign_payload)
+
+    url = f"{MEXC_FUTURES_BASE}{path}"
+    headers = {
+        "Content-Type": "application/json",
+        "ApiKey": MEXC_API_KEY,
+        "Request-Time": ts,
+        "Signature": signature,
+        "Recv-Window": str(RECV_WINDOW_MS),
+    }
+
+    if DRY_RUN:
+        return {
+            "dry_run": True,
+            "method": method.upper(),
+            "url": url,
+            "params": params if method.upper() in ("GET", "DELETE") else None,
+            "body": body if method.upper() == "POST" else None,
+            "raw_json": raw_json,
+        }
+
+    r = requests.request(
+        method.upper(),
+        url,
+        params=params if method.upper() in ("GET", "DELETE") else None,
+        data=raw_json if method.upper() == "POST" else None,
+        headers=headers,
+        timeout=20,
+    )
+
+    try:
+        data = r.json()
+    except Exception:
+        raise Exception(f"Non-JSON from MEXC: {r.status_code} {r.text[:300]}")
+
+    if r.status_code >= 400 or (isinstance(data, dict) and data.get("success") is False):
+        raise Exception(f"MEXC error: {data}")
+
+    return data
+
+
+def _validate_tv_payload(p: dict) -> dict:
+    if not TV_PASSPHRASE:
+        raise Exception("TV_PASSPHRASE missing")
+
+    if p.get("passphrase") != TV_PASSPHRASE:
+        raise Exception("Invalid passphrase")
+
+    symbol_tv = str(p.get("symbol", "")).upper()
+    if symbol_tv not in ALLOWED_SYMBOLS:
+        raise Exception(f"Symbol not allowed: {symbol_tv}")
+
+    if not _cooldown_ok(symbol_tv):
+        raise Exception(f"Cooldown active for {symbol_tv}")
+
+    direction = str(p.get("direction", "")).upper()
+    if direction not in ("LONG", "SHORT"):
+        raise Exception("direction must be LONG or SHORT")
+
+    qty = float(p.get("qty", 0) or 0)
+    if qty <= 0:
+        raise Exception("qty must be > 0")
+
+    leverage = int(p.get("leverage", 1) or 1)
+    if leverage < 1 or leverage > 500:
+        raise Exception("Invalid leverage")
+
+    margin_mode = str(p.get("marginMode", "ISOLATED")).upper()
+    if margin_mode not in ("ISOLATED", "CROSS", "CROSSED"):
+        raise Exception("marginMode must be ISOLATED or CROSS")
+ 
+    time_close = int(p.get("timeClose", 0) or 0)
+    if time_close <= 0:
+        raise Exception("timeClose (ms) is required")
+
+    now = _now_ms()
+
+    # Reject timestamps too far in the future (clock glitches)
+    if time_close > now + 5000:
+        raise Exception("timeClose is in the future (more than 5s). Rejecting for safety.")
+
+    # Reject stale signals
+    age_sec = (now - time_close) / 1000.0
+    if age_sec > MAX_SIGNAL_AGE_SEC:
+        raise Exception(f"Stale signal: age {age_sec:.1f}s > {MAX_SIGNAL_AGE_SEC}s")
+
+    client_oid = str(p.get("clientOrderId", "")).strip()
+    if not client_oid:
+        raise Exception("clientOrderId is required")
+    if _is_dup_oid(client_oid):
+        raise Exception("Duplicate clientOrderId")
+
+    entry = float(p.get("entry", 0) or 0)
+    stop_loss = float(p.get("stopLoss", 0) or 0)
+    take_profit = float(p.get("takeProfit", 0) or 0)
+    if entry <= 0 or stop_loss <= 0 or take_profit <= 0:
+        raise Exception("entry/stopLoss/takeProfit must be > 0")
+    # Sanity check: bracket must make sense
+    if direction == "LONG":
+        if not (stop_loss < entry < take_profit):
+            raise Exception("Invalid LONG bracket: must be stopLoss < entry < takeProfit")
+    else:  # SHORT
+        if not (take_profit < entry < stop_loss):
+            raise Exception("Invalid SHORT bracket: must be takeProfit < entry < stopLoss")
+
+    mexc_symbol = _to_mexc_symbol(symbol_tv)
+    open_type = 1 if margin_mode == "ISOLATED" else 2  # 1 isolated, 2 cross
+    side = 1 if direction == "LONG" else 3             # 1 open long, 3 open short
+
+    return {
+        "symbol_tv": symbol_tv,
+        "symbol": mexc_symbol,
+        "qty": qty,
+        "leverage": leverage,
+        "openType": open_type,
+        "side": side,
+        "entry": entry,
+        "stopLoss": stop_loss,
+        "takeProfit": take_profit,
+        "clientOrderId": client_oid,
+    }
+
+
 
 WEB3_PROVIDER = os.environ.get("WEB3_PROVIDER")
 PRIVATE_KEY = os.environ.get("PRIVATE_KEY")
@@ -309,6 +507,51 @@ session_tokens = {}
 @app.route('/')
 def home():
     return "Abay GERD Token API is running."
+
+@app.route("/webhook/tv_trade", methods=["POST"])
+def tv_trade():
+    try:
+        payload = request.get_json(silent=True) or {}
+
+        # Kill switch (no redeploy needed)
+        if os.getenv("TRADING_ENABLED", "true").lower() != "true":
+            return jsonify({"accepted": False, "error": "Trading disabled (TRADING_ENABLED!=true)"}), 403
+
+        data = _validate_tv_payload(payload)
+
+
+        # idempotency BEFORE exchange call
+        _remember_oid(data["clientOrderId"])
+
+        body = {
+            "symbol": data["symbol"],
+            "price": data["entry"],
+            "vol": data["qty"],
+            "leverage": data["leverage"],
+            "side": data["side"],
+            "type": 5,  # market
+            "openType": data["openType"],
+            "externalOid": data["clientOrderId"],
+            "stopLossPrice": data["stopLoss"],
+            "takeProfitPrice": data["takeProfit"],
+            "lossTrend": 1,
+            "profitTrend": 1,
+            "priceProtect": PRICE_PROTECT,
+        }
+
+        resp = _mexc_request("POST", "/api/v1/private/order/submit", body=body)
+        _set_cooldown(payload["symbol"].upper())
+
+        return jsonify({
+            "accepted": True,
+            "normalized": data,
+            "mexc": resp,
+            "dry_run": DRY_RUN
+        })
+
+    except Exception as e:
+        return jsonify({"accepted": False, "error": str(e)}), 400
+
 
 @app.route('/auth/session', methods=['GET'])
 def generate_session_token():
