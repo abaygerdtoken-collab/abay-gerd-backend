@@ -246,6 +246,22 @@ def _get_client_ip() -> str:
         return x_forwarded_for.split(',')[0].strip()
     return request.remote_addr or ''
 
+
+def _is_inapp_or_webview(user_agent: str) -> bool:
+    ua = (user_agent or "").lower()
+
+    bad_markers = [
+        "okex-guanwang", "okapp/(okex", "brokerdomain/www.okx.com",
+        "metamask", "trust", "trustwallet", "coinbasewallet", "cbwallet",
+        "binance", "bnb", "safepal", "tokenpocket", "imtoken", "bitget",
+        "bybit", "gateio", "kucoin", "huobi", "mexc", "okx",
+        " wv", "webview", "; wv)", "version/4.0",
+        "line/", "micromessenger", "fbav", "fban", "instagram", "tiktok",
+        "snapchat", "pinterest", "telegram", "discord",
+    ]
+
+    return any(marker in ua for marker in bad_markers)
+
 COUNTRY_CODE_TO_NAME = {
     "AF": "Afghanistan",
     "AL": "Albania",
@@ -607,6 +623,14 @@ def send_token():
     tx_hash_hex = ''
     try:
         data = request.get_json(silent=True) or {}
+
+        if os.getenv("BLOCK_INAPP_BROWSERS", "true").lower() == "true":
+            ua = request.headers.get("User-Agent", "")
+            if _is_inapp_or_webview(ua):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'In-app browsers are not supported for claims. Please open this page in Chrome or Safari.'
+                }), 403
 
         session_token = data.get('session_token')
         if not session_token or session_token not in session_tokens:
