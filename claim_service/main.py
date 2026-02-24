@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, date
 import secrets
 import hmac
 import time
+from threading import Lock
 from google.api_core.exceptions import AlreadyExists
 
 app = Flask(__name__)
@@ -540,6 +541,9 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 session_tokens = {}
+CLAIM_LOG_WINDOW = int(os.getenv("CLAIM_LOG_WINDOW", "2000"))
+claim_events = []
+claim_log_lock = Lock()
 
 @app.route('/')
 def home():
@@ -621,33 +625,70 @@ def send_token():
     wallet_ref = None
     claim_reserved = False
     tx_hash_hex = ''
+    request_id = secrets.token_hex(8)
+    client_ip = _get_client_ip()
+    user_agent = request.headers.get("User-Agent", "")
+
+    def _claim_log(event: str, **fields):
+        now_ts = time.time()
+        payload = {
+            'event': event,
+            'request_id': request_id,
+            'ts': datetime.utcnow().isoformat() + "Z",
+            'ts_unix': now_ts,
+            **fields,
+        }
+        with claim_log_lock:
+            claim_events.append(payload)
+            if len(claim_events) > CLAIM_LOG_WINDOW:
+                del claim_events[0:len(claim_events) - CLAIM_LOG_WINDOW]
+        print("CLAIM_LOG", json.dumps(payload, ensure_ascii=False, default=str))
+
+    def _error_response(status_code: int, message: str, reason: str, **fields):
+        _claim_log(
+            'claim_rejected',
+            status_code=status_code,
+            reason=reason,
+            message=message,
+            ip=str(client_ip),
+            ua=str(user_agent)[:220],
+            **fields,
+        )
+        return jsonify({'status': 'error', 'message': message, 'request_id': request_id}), status_code
+
     try:
         data = request.get_json(silent=True) or {}
 
         if os.getenv("BLOCK_INAPP_BROWSERS", "true").lower() == "true":
             ua = request.headers.get("User-Agent", "")
             if _is_inapp_or_webview(ua):
-                return jsonify({
-                    'status': 'error',
-                    'message': 'In-app browsers are not supported for claims. Please open this page in Chrome or Safari.'
-                }), 403
+                return _error_response(
+                    403,
+                    'In-app browsers are not supported for claims. Please open this page in Chrome or Safari.',
+                    'inapp_browser_blocked',
+                )
 
         session_token = data.get('session_token')
         if not session_token or session_token not in session_tokens:
-            return jsonify({'status': 'error', 'message': 'Missing or invalid session token'}), 403
+            return _error_response(
+                403,
+                'Missing or invalid session token',
+                'session_token_invalid_or_missing',
+                has_token=bool(session_token),
+            )
         if datetime.utcnow() > session_tokens[session_token]:
             session_tokens.pop(session_token, None)
-            return jsonify({'status': 'error', 'message': 'Session token expired'}), 403
+            return _error_response(403, 'Session token expired', 'session_token_expired')
         session_tokens.pop(session_token, None)
 
         recaptcha_response = data.get('recaptchaToken')
         if not recaptcha_response:
-            return jsonify({'status': 'error', 'message': 'Please complete reCAPTCHA'}), 400
+            return _error_response(400, 'Please complete reCAPTCHA', 'recaptcha_missing')
 
         if not RECAPTCHA_SECRET_KEY:
-            return jsonify({'status': 'error', 'message': 'reCAPTCHA is not configured on the server'}), 500
+            return _error_response(500, 'reCAPTCHA is not configured on the server', 'recaptcha_server_not_configured')
 
-        user_ip = _get_client_ip()
+        user_ip = client_ip
 
         verify_url = "https://www.google.com/recaptcha/api/siteverify"
         try:
@@ -660,22 +701,39 @@ def send_token():
                 },
                 timeout=10
             ).json()
-        except Exception:
-            return jsonify({'status': 'error', 'message': 'Failed to verify reCAPTCHA'}), 400
+        except Exception as recaptcha_err:
+            return _error_response(400, 'Failed to verify reCAPTCHA', 'recaptcha_verify_request_failed', error=str(recaptcha_err))
 
         if not recaptcha_verify.get('success'):
-            return jsonify({'status': 'error', 'message': 'Invalid reCAPTCHA'}), 400
+            return _error_response(
+                400,
+                'Invalid reCAPTCHA',
+                'recaptcha_verify_failed',
+                recaptcha_error_codes=recaptcha_verify.get('error-codes', []),
+            )
 
         hostname = str(recaptcha_verify.get('hostname', '')).strip().lower()
         if not hostname or hostname not in RECAPTCHA_ALLOWED_HOSTNAMES:
-            return jsonify({'status': 'error', 'message': 'Captcha hostname mismatch'}), 400
+            return _error_response(
+                400,
+                'Captcha hostname mismatch',
+                'recaptcha_hostname_mismatch',
+                captcha_hostname=hostname,
+                allowed_hostnames=sorted(list(RECAPTCHA_ALLOWED_HOSTNAMES)),
+            )
 
         action = str(recaptcha_verify.get('action', '')).strip().lower()
         if action:
             if RECAPTCHA_EXPECTED_ACTION and action != RECAPTCHA_EXPECTED_ACTION:
-                return jsonify({'status': 'error', 'message': 'Captcha action mismatch'}), 400
+                return _error_response(
+                    400,
+                    'Captcha action mismatch',
+                    'recaptcha_action_mismatch',
+                    captcha_action=action,
+                    expected_action=RECAPTCHA_EXPECTED_ACTION,
+                )
         elif RECAPTCHA_ENFORCE_V3:
-            return jsonify({'status': 'error', 'message': 'Captcha action missing'}), 400
+            return _error_response(400, 'Captcha action missing', 'recaptcha_action_missing')
 
         score_raw = recaptcha_verify.get('score', None)
         if score_raw is not None:
@@ -684,13 +742,19 @@ def send_token():
             except Exception:
                 score = 0.0
             if score < RECAPTCHA_MIN_SCORE:
-                return jsonify({'status': 'error', 'message': 'Captcha score too low'}), 400
+                return _error_response(
+                    400,
+                    'Captcha score too low',
+                    'recaptcha_score_low',
+                    score=score,
+                    min_score=RECAPTCHA_MIN_SCORE,
+                )
         elif RECAPTCHA_ENFORCE_V3:
-            return jsonify({'status': 'error', 'message': 'Captcha score missing'}), 400
+            return _error_response(400, 'Captcha score missing', 'recaptcha_score_missing')
 
         recipient_raw = data.get("recipient")
         if not Web3.is_address(recipient_raw):
-            return jsonify({'status': 'error', 'message': 'Invalid wallet address'}), 400
+            return _error_response(400, 'Invalid wallet address', 'recipient_invalid')
 
         recipient = Web3.to_checksum_address(recipient_raw)
 
@@ -723,21 +787,24 @@ def send_token():
             country_name = COUNTRY_CODE_TO_NAME.get(country_code, '')
 
         if not country_code:
-            return jsonify({'status': 'error', 'message': 'Could not determine your country. Claim blocked for safety.'}), 400
+            return _error_response(400, 'Could not determine your country. Claim blocked for safety.', 'country_lookup_failed')
 
         # Geo-blocking: check configurable blocked countries
         blocked_countries = set(c.strip().upper() for c in os.getenv('BLOCK_COUNTRIES', '').split(',') if c.strip())
         if blocked_countries and country_code.upper() in blocked_countries:
-            return jsonify({
-                'status': 'error',
-                'message': 'Claims are temporarily unavailable. Please try later'
-            }), 403
+            return _error_response(
+                403,
+                'Claims are temporarily unavailable. Please try later',
+                'country_blocked',
+                country_code=country_code.upper(),
+                blocked_countries=sorted(list(blocked_countries)),
+            )
 
         today_str = date.today().isoformat()
         ip_claims_ref = db.collection('ip_claims').document(f"{user_ip}_{today_str}")
         ip_claim_doc = ip_claims_ref.get()
         if ip_claim_doc.exists and ip_claim_doc.to_dict().get('count', 0) >= 15:
-            return jsonify({'status': 'error', 'message': 'Daily claim limit reached for your IP'}), 429
+            return _error_response(429, 'Daily claim limit reached for your IP', 'ip_daily_limit_reached', daily_limit=15)
 
         amount_tokens = 75000 if country_code == 'ET' else 10000
         amount_scaled = int(amount_tokens * (10 ** TOKEN_DECIMALS))
@@ -754,7 +821,12 @@ def send_token():
             })
             claim_reserved = True
         except AlreadyExists:
-            return jsonify({'status': 'error', 'message': 'This wallet has already claimed its share of GERD token.'}), 400
+            return _error_response(
+                400,
+                'This wallet has already claimed its share of GERD token.',
+                'wallet_already_claimed',
+                recipient=recipient,
+            )
 
         nonce = web3.eth.get_transaction_count(SENDER_ADDRESS)
         tx = token_contract.functions.transfer(recipient, amount_scaled).build_transaction({
@@ -792,7 +864,17 @@ def send_token():
         else:
             ip_claims_ref.set({'count': 1, 'date': today_str})
 
-        return jsonify({'status': 'success', 'tx_hash': tx_hash_hex})
+        _claim_log(
+            'claim_success',
+            status_code=200,
+            ip=str(user_ip),
+            recipient=recipient,
+            country=country_code.upper(),
+            city=str(city),
+            tx_hash=tx_hash_hex,
+        )
+
+        return jsonify({'status': 'success', 'tx_hash': tx_hash_hex, 'request_id': request_id})
 
     except Exception as e:
         if claim_reserved and wallet_ref is not None and not tx_hash_hex:
@@ -804,7 +886,77 @@ def send_token():
             'wallet_address': data.get('recipient', ''),
             'error': str(e)
         })
-        return jsonify({'status': 'error', 'message': str(e)}), 400
+        _claim_log(
+            'claim_exception',
+            status_code=400,
+            ip=str(client_ip),
+            recipient=data.get('recipient', ''),
+            error=str(e),
+        )
+        return jsonify({'status': 'error', 'message': str(e), 'request_id': request_id}), 400
+
+
+@app.route('/admin/claim-log-health', methods=['GET'])
+def claim_log_health():
+    admin_metrics_key = os.getenv("ADMIN_METRICS_KEY", "")
+    provided_key = request.headers.get("X-Admin-Key", "")
+    if admin_metrics_key and not hmac.compare_digest(provided_key, admin_metrics_key):
+        return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+
+    minutes_raw = request.args.get('minutes', '60')
+    limit_raw = request.args.get('limit', '500')
+
+    try:
+        minutes = max(1, min(1440, int(minutes_raw)))
+    except Exception:
+        return jsonify({'status': 'error', 'message': 'Invalid minutes parameter'}), 400
+
+    try:
+        limit = max(1, min(CLAIM_LOG_WINDOW, int(limit_raw)))
+    except Exception:
+        return jsonify({'status': 'error', 'message': 'Invalid limit parameter'}), 400
+
+    now_ts = time.time()
+    cutoff_ts = now_ts - (minutes * 60)
+
+    with claim_log_lock:
+        events_snapshot = list(claim_events)
+
+    recent_tail = events_snapshot[-limit:]
+    rejected_recent = [
+        e for e in recent_tail
+        if e.get('event') == 'claim_rejected' and float(e.get('ts_unix', 0)) >= cutoff_ts
+    ]
+
+    counts_by_reason = {}
+    for event in rejected_recent:
+        reason = str(event.get('reason', 'unknown') or 'unknown')
+        counts_by_reason[reason] = counts_by_reason.get(reason, 0) + 1
+
+    sorted_counts = dict(sorted(counts_by_reason.items(), key=lambda item: item[1], reverse=True))
+
+    sample_recent = [
+        {
+            'ts': event.get('ts'),
+            'request_id': event.get('request_id'),
+            'reason': event.get('reason'),
+            'status_code': event.get('status_code'),
+            'ip': event.get('ip'),
+            'message': event.get('message'),
+        }
+        for event in rejected_recent[-20:]
+    ]
+
+    return jsonify({
+        'status': 'ok',
+        'window_minutes': minutes,
+        'tail_limit': limit,
+        'buffer_size': len(events_snapshot),
+        'buffer_max': CLAIM_LOG_WINDOW,
+        'rejections_in_window': len(rejected_recent),
+        'counts_by_reason': sorted_counts,
+        'recent_rejections': sample_recent,
+    })
 
 # ==========================================================
 # ETN Identity OAuth (Authorization Code + PKCE)
