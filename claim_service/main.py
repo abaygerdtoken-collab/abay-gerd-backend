@@ -725,6 +725,14 @@ def send_token():
         if not country_code:
             return jsonify({'status': 'error', 'message': 'Could not determine your country. Claim blocked for safety.'}), 400
 
+        # Geo-blocking: check configurable blocked countries
+        blocked_countries = set(c.strip().upper() for c in os.getenv('BLOCK_COUNTRIES', '').split(',') if c.strip())
+        if blocked_countries and country_code.upper() in blocked_countries:
+            return jsonify({
+                'status': 'error',
+                'message': 'Claims are temporarily unavailable. Please try later'
+            }), 403
+
         today_str = date.today().isoformat()
         ip_claims_ref = db.collection('ip_claims').document(f"{user_ip}_{today_str}")
         ip_claim_doc = ip_claims_ref.get()
