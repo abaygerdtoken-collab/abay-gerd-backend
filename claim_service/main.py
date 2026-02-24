@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, date
 import secrets
 import hmac
 import time
+from google.api_core.exceptions import AlreadyExists
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {
@@ -31,7 +32,7 @@ MEXC_API_SECRET = os.getenv("MEXC_API_SECRET", "")
 MEXC_FUTURES_BASE = os.getenv("MEXC_FUTURES_BASE", "https://api.mexc.com")
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
-ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT").split(","))
+ALLOWED_SYMBOLS = set(s.strip().upper() for s in os.getenv("ALLOWED_SYMBOLS", "BTC_USDT,ETH_USDT").split(","))
 RECV_WINDOW_MS = int(os.getenv("RECV_WINDOW_MS", "10000"))
 MAX_SIGNAL_AGE_SEC = int(os.getenv("MAX_SIGNAL_AGE_SEC", "90"))
 COOLDOWN_SECONDS = int(os.getenv("COOLDOWN_SECONDS", "10"))
@@ -228,7 +229,22 @@ SENDER_ADDRESS = os.environ.get("SENDER_ADDRESS")
 TOKEN_CONTRACT_ADDRESS = os.environ.get("TOKEN_CONTRACT_ADDRESS")
 TOKEN_DECIMALS = int(os.environ.get("TOKEN_DECIMALS", 2))
 RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY")
+RECAPTCHA_ALLOWED_HOSTNAMES = {
+    h.strip().lower()
+    for h in os.environ.get("RECAPTCHA_ALLOWED_HOSTNAMES", "www.abaygerdtoken.com,abaygerdtoken.com").split(",")
+    if h.strip()
+}
+RECAPTCHA_EXPECTED_ACTION = os.environ.get("RECAPTCHA_EXPECTED_ACTION", "claim").strip().lower()
+RECAPTCHA_MIN_SCORE = float(os.environ.get("RECAPTCHA_MIN_SCORE", "0.5"))
+RECAPTCHA_ENFORCE_V3 = os.environ.get("RECAPTCHA_ENFORCE_V3", "false").lower() == "true"
 IPINFO_TOKEN = os.environ.get("IPINFO_TOKEN")
+
+
+def _get_client_ip() -> str:
+    x_forwarded_for = request.headers.get('X-Forwarded-For', '')
+    if x_forwarded_for:
+        return x_forwarded_for.split(',')[0].strip()
+    return request.remote_addr or ''
 
 COUNTRY_CODE_TO_NAME = {
     "AF": "Afghanistan",
@@ -557,6 +573,7 @@ def tv_trade():
             "profitTrend": 1,
             "priceProtect": PRICE_PROTECT,
         }
+        print("MEXC ORDER BODY:", body)
 
         resp = _mexc_request("POST", "/api/v1/private/order/submit", body=body)
 
@@ -585,6 +602,9 @@ def generate_session_token():
 @app.route('/send-token', methods=['POST'])
 def send_token():
     data = {} 
+    wallet_ref = None
+    claim_reserved = False
+    tx_hash_hex = ''
     try:
         data = request.get_json(silent=True) or {}
 
@@ -600,15 +620,49 @@ def send_token():
         if not recaptcha_response:
             return jsonify({'status': 'error', 'message': 'Please complete reCAPTCHA'}), 400
 
+        if not RECAPTCHA_SECRET_KEY:
+            return jsonify({'status': 'error', 'message': 'reCAPTCHA is not configured on the server'}), 500
+
+        user_ip = _get_client_ip()
+
         verify_url = "https://www.google.com/recaptcha/api/siteverify"
-        recaptcha_verify = requests.post(
-            verify_url,
-            data={'secret': RECAPTCHA_SECRET_KEY, 'response': recaptcha_response},
-            timeout=10
-        ).json()
+        try:
+            recaptcha_verify = requests.post(
+                verify_url,
+                data={
+                    'secret': RECAPTCHA_SECRET_KEY,
+                    'response': recaptcha_response,
+                    'remoteip': user_ip
+                },
+                timeout=10
+            ).json()
+        except Exception:
+            return jsonify({'status': 'error', 'message': 'Failed to verify reCAPTCHA'}), 400
 
         if not recaptcha_verify.get('success'):
             return jsonify({'status': 'error', 'message': 'Invalid reCAPTCHA'}), 400
+
+        hostname = str(recaptcha_verify.get('hostname', '')).strip().lower()
+        if not hostname or hostname not in RECAPTCHA_ALLOWED_HOSTNAMES:
+            return jsonify({'status': 'error', 'message': 'Captcha hostname mismatch'}), 400
+
+        action = str(recaptcha_verify.get('action', '')).strip().lower()
+        if action:
+            if RECAPTCHA_EXPECTED_ACTION and action != RECAPTCHA_EXPECTED_ACTION:
+                return jsonify({'status': 'error', 'message': 'Captcha action mismatch'}), 400
+        elif RECAPTCHA_ENFORCE_V3:
+            return jsonify({'status': 'error', 'message': 'Captcha action missing'}), 400
+
+        score_raw = recaptcha_verify.get('score', None)
+        if score_raw is not None:
+            try:
+                score = float(score_raw)
+            except Exception:
+                score = 0.0
+            if score < RECAPTCHA_MIN_SCORE:
+                return jsonify({'status': 'error', 'message': 'Captcha score too low'}), 400
+        elif RECAPTCHA_ENFORCE_V3:
+            return jsonify({'status': 'error', 'message': 'Captcha score missing'}), 400
 
         recipient_raw = data.get("recipient")
         if not Web3.is_address(recipient_raw):
@@ -618,11 +672,6 @@ def send_token():
 
 
         wallet_ref = db.collection('wallet_claims').document(recipient)
-        if wallet_ref.get().exists:
-            return jsonify({'status': 'error', 'message': 'This wallet has already claimed its share of GERD token.'}), 400
-
-        x_forwarded_for = request.headers.get('X-Forwarded-For', '')
-        user_ip = x_forwarded_for.split(',')[0].strip() if x_forwarded_for else request.remote_addr
 
         country_code = ''
         country_name = ''
@@ -662,6 +711,19 @@ def send_token():
         amount_scaled = int(amount_tokens * (10 ** TOKEN_DECIMALS))
         amount_str = str(amount_scaled)
 
+        try:
+            wallet_ref.create({
+                'status': 'pending',
+                'created_at': datetime.utcnow().isoformat() + "Z",
+                'ip': str(user_ip),
+                'country': str(country_name),
+                'city': str(city),
+                'token_amount': amount_str,
+            })
+            claim_reserved = True
+        except AlreadyExists:
+            return jsonify({'status': 'error', 'message': 'This wallet has already claimed its share of GERD token.'}), 400
+
         nonce = web3.eth.get_transaction_count(SENDER_ADDRESS)
         tx = token_contract.functions.transfer(recipient, amount_scaled).build_transaction({
             'from': SENDER_ADDRESS,
@@ -671,6 +733,17 @@ def send_token():
         })
         signed_tx = web3.eth.account.sign_transaction(tx, private_key=PRIVATE_KEY)
         tx_hash = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        tx_hash_hex = tx_hash.hex()
+
+        wallet_ref.set({
+            'status': 'completed',
+            'claimed_at': datetime.utcnow().isoformat() + "Z",
+            'ip': str(user_ip),
+            'country': str(country_name),
+            'city': str(city),
+            'token_amount': amount_str,
+            'tx_hash': tx_hash_hex
+        }, merge=True)
 
         db.collection('user_data').add({
             'wallet_address': str(recipient),
@@ -679,16 +752,7 @@ def send_token():
             'city': str(city),
             'token_amount': amount_str,
             'claimed_at': datetime.utcnow().isoformat() + "Z",
-            'tx_hash': tx_hash.hex()
-        })
-
-        wallet_ref.set({
-            'claimed_at': datetime.utcnow().isoformat() + "Z",
-            'ip': str(user_ip),
-            'country': str(country_name),
-            'city': str(city),
-            'token_amount': amount_str,
-            'tx_hash': tx_hash.hex()
+            'tx_hash': tx_hash_hex
         })
 
         if ip_claim_doc.exists:
@@ -696,9 +760,14 @@ def send_token():
         else:
             ip_claims_ref.set({'count': 1, 'date': today_str})
 
-        return jsonify({'status': 'success', 'tx_hash': tx_hash.hex()})
+        return jsonify({'status': 'success', 'tx_hash': tx_hash_hex})
 
     except Exception as e:
+        if claim_reserved and wallet_ref is not None and not tx_hash_hex:
+            try:
+                wallet_ref.delete()
+            except Exception:
+                pass
         db.collection('failed_data').add({
             'wallet_address': data.get('recipient', ''),
             'error': str(e)
