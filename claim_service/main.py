@@ -540,10 +540,46 @@ cred = credentials.Certificate(cred_path)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
-session_tokens = {}
+CLAIM_SESSION_COLLECTION = os.getenv("CLAIM_SESSION_COLLECTION", "claim_session_tokens")
+SESSION_TOKEN_TTL_MINUTES = int(os.getenv("SESSION_TOKEN_TTL_MINUTES", "5"))
 CLAIM_LOG_WINDOW = int(os.getenv("CLAIM_LOG_WINDOW", "2000"))
 claim_events = []
 claim_log_lock = Lock()
+
+
+def _consume_claim_session_token(session_token: str):
+    token = str(session_token or "").strip()
+    if not token:
+        return False, "missing"
+
+    token_ref = db.collection(CLAIM_SESSION_COLLECTION).document(token)
+    tx = db.transaction()
+
+    @firestore.transactional
+    def _consume_token(transaction, ref):
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            return False, "invalid"
+
+        data = snap.to_dict() or {}
+        expires_at = data.get("expiresAt")
+        if not isinstance(expires_at, datetime):
+            transaction.delete(ref)
+            return False, "invalid_expiry"
+
+        now = datetime.now(expires_at.tzinfo) if expires_at.tzinfo else datetime.utcnow()
+        if now > expires_at:
+            transaction.delete(ref)
+            return False, "expired"
+
+        transaction.delete(ref)
+        return True, "ok"
+
+    try:
+        return _consume_token(tx, token_ref)
+    except Exception as token_err:
+        print("SESSION TOKEN CONSUME ERROR:", str(token_err))
+        return False, "backend_error"
 
 @app.route('/')
 def home():
@@ -615,9 +651,19 @@ def tv_trade():
 @app.route('/auth/session', methods=['GET'])
 def generate_session_token():
     token = secrets.token_urlsafe(32)
-    expiration = datetime.utcnow() + timedelta(minutes=5)
-    session_tokens[token] = expiration
-    return jsonify({'session_token': token})
+    expiration = datetime.utcnow() + timedelta(minutes=SESSION_TOKEN_TTL_MINUTES)
+    try:
+        db.collection(CLAIM_SESSION_COLLECTION).document(token).set({
+            'createdAt': datetime.utcnow(),
+            'expiresAt': expiration,
+            'ip': _get_client_ip(),
+            'ua': request.headers.get("User-Agent", "")[:220],
+        })
+    except Exception as token_create_err:
+        print("SESSION TOKEN CREATE ERROR:", str(token_create_err))
+        return jsonify({'status': 'error', 'message': 'Unable to create session token'}), 500
+
+    return jsonify({'session_token': token, 'expires_in_seconds': SESSION_TOKEN_TTL_MINUTES * 60})
 
 @app.route('/send-token', methods=['POST'])
 def send_token():
@@ -681,17 +727,18 @@ def send_token():
                 )
 
         session_token = data.get('session_token')
-        if not session_token or session_token not in session_tokens:
+        session_ok, session_reason = _consume_claim_session_token(session_token)
+        if not session_ok:
+            if session_reason == 'expired':
+                return _error_response(403, 'Session token expired', 'session_token_expired')
+            if session_reason == 'backend_error':
+                return _error_response(503, 'Session validation unavailable. Please retry.', 'session_token_backend_error')
             return _error_response(
                 403,
                 'Missing or invalid session token',
                 'session_token_invalid_or_missing',
                 has_token=bool(session_token),
             )
-        if datetime.utcnow() > session_tokens[session_token]:
-            session_tokens.pop(session_token, None)
-            return _error_response(403, 'Session token expired', 'session_token_expired')
-        session_tokens.pop(session_token, None)
 
         recaptcha_response = data.get('recaptchaToken')
         if not recaptcha_response:
