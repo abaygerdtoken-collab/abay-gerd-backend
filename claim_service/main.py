@@ -621,7 +621,7 @@ def generate_session_token():
 
 @app.route('/send-token', methods=['POST'])
 def send_token():
-    data = {} 
+    data = {}
     wallet_ref = None
     claim_reserved = False
     tx_hash_hex = ''
@@ -657,6 +657,18 @@ def send_token():
         return jsonify({'status': 'error', 'message': message, 'request_id': request_id}), status_code
 
     try:
+        # -------------------------
+        # EARLY IP BLOCK (cheapest)
+        # -------------------------
+        blocked_ips = set(i.strip() for i in os.getenv("BLOCK_IPS", "").split(",") if i.strip())
+        if blocked_ips and str(client_ip) in blocked_ips:
+            return _error_response(
+                403,
+                'Claims are temporarily unavailable. Please try later',
+                'ip_blocked',
+                blocked_ips=sorted(list(blocked_ips))[:25],
+            )
+
         data = request.get_json(silent=True) or {}
 
         if os.getenv("BLOCK_INAPP_BROWSERS", "true").lower() == "true":
@@ -758,9 +770,16 @@ def send_token():
 
         recipient = Web3.to_checksum_address(recipient_raw)
 
-
         wallet_ref = db.collection('wallet_claims').document(recipient)
 
+        # -------------------------
+        # STRICT COUNTRY CHECK
+        # Block if either provider reports a blocked country
+        # -------------------------
+        blocked_countries = set(c.strip().upper() for c in os.getenv('BLOCK_COUNTRIES', '').split(',') if c.strip())
+
+        ipinfo_country = ''
+        ipapi_country = ''
         country_code = ''
         country_name = ''
         city = ''
@@ -768,37 +787,43 @@ def send_token():
         try:
             ipinfo_url = f'https://ipinfo.io/{user_ip}?token={IPINFO_TOKEN}'
             location_data = requests.get(ipinfo_url, timeout=5).json()
-            country_code = location_data.get('country', '')
-            city = location_data.get('city', '')
+            ipinfo_country = (location_data.get('country', '') or '').upper()
+            city = location_data.get('city', '') or ''
         except Exception:
             pass
 
         try:
             fallback_data = requests.get(f'https://ipapi.co/{user_ip}/json/', timeout=5).json()
-            if not country_code:
-                country_code = fallback_data.get('country_code', '')
-            country_name = fallback_data.get('country_name', '')
+            ipapi_country = (fallback_data.get('country_code', '') or '').upper()
+            country_name = fallback_data.get('country_name', '') or ''
             if not city:
-                city = fallback_data.get('city', '')
+                city = fallback_data.get('city', '') or ''
         except Exception:
             pass
 
-        if not country_name:
-            country_name = COUNTRY_CODE_TO_NAME.get(country_code, '')
-
-        if not country_code:
-            return _error_response(400, 'Could not determine your country. Claim blocked for safety.', 'country_lookup_failed')
-
-        # Geo-blocking: check configurable blocked countries
-        blocked_countries = set(c.strip().upper() for c in os.getenv('BLOCK_COUNTRIES', '').split(',') if c.strip())
-        if blocked_countries and country_code.upper() in blocked_countries:
+        # Strict block: if either says blocked -> block
+        if blocked_countries and (ipinfo_country in blocked_countries or ipapi_country in blocked_countries):
+            chosen_cc = ipinfo_country or ipapi_country or ''
+            if not chosen_cc:
+                chosen_cc = 'UNKNOWN'
             return _error_response(
                 403,
                 'Claims are temporarily unavailable. Please try later',
                 'country_blocked',
-                country_code=country_code.upper(),
+                country_code=chosen_cc,
+                ipinfo_country=ipinfo_country,
+                ipapi_country=ipapi_country,
                 blocked_countries=sorted(list(blocked_countries)),
             )
+
+        # Continue normal: pick best available country_code
+        country_code = (ipinfo_country or ipapi_country or '').upper()
+
+        if not country_name and country_code:
+            country_name = COUNTRY_CODE_TO_NAME.get(country_code, '')
+
+        if not country_code:
+            return _error_response(400, 'Could not determine your country. Claim blocked for safety.', 'country_lookup_failed')
 
         today_str = date.today().isoformat()
         ip_claims_ref = db.collection('ip_claims').document(f"{user_ip}_{today_str}")
