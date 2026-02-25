@@ -6,3 +6,4 @@ urllib3==2.1.0
 firebase-admin==6.4.0
 python-dotenv==1.0.1
 gunicorn==21.2.0
+PyJWT[crypto]==2.9.0

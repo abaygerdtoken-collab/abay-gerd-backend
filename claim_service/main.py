@@ -6,6 +6,8 @@ from flask import Flask, request, jsonify, redirect
 from flask_cors import CORS
 from web3 import Web3
 from eth_keys import keys
+from eth_account import Account
+from eth_account.messages import encode_defunct
 import os
 import requests
 import firebase_admin
@@ -16,6 +18,13 @@ import hmac
 import time
 from threading import Lock
 from google.api_core.exceptions import AlreadyExists
+
+try:
+    import jwt
+    from jwt import PyJWKClient
+except Exception:
+    jwt = None
+    PyJWKClient = None
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {
@@ -546,9 +555,40 @@ ENABLE_IP_COOLDOWN = os.getenv("ENABLE_IP_COOLDOWN", "true").lower() == "true"
 IP_COOLDOWN_CLAIMS = int(os.getenv("IP_COOLDOWN_CLAIMS", "3"))
 IP_COOLDOWN_MINUTES = int(os.getenv("IP_COOLDOWN_MINUTES", "15"))
 IP_COOLDOWN_COLLECTION = os.getenv("IP_COOLDOWN_COLLECTION", "ip_claim_cooldown")
+CLAIM_CHALLENGE_COLLECTION = os.getenv("CLAIM_CHALLENGE_COLLECTION", "claim_challenges")
+CLAIM_CHALLENGE_TTL_MINUTES = int(os.getenv("CLAIM_CHALLENGE_TTL_MINUTES", "5"))
+CLAIM_CHALLENGE_MAX_ATTEMPTS = int(os.getenv("CLAIM_CHALLENGE_MAX_ATTEMPTS", "10"))
+CLAIM_CHALLENGE_DOMAIN = os.getenv("CLAIM_CHALLENGE_DOMAIN", "www.abaygerdtoken.com")
+IDENTITY_CLAIMS_COLLECTION = os.getenv("IDENTITY_CLAIMS_COLLECTION", "identity_claims")
+WEB3AUTH_ID_TOKEN_REQUIRED = os.getenv("WEB3AUTH_ID_TOKEN_REQUIRED", "true").lower() == "true"
+WEB3AUTH_JWKS_URL = os.getenv("WEB3AUTH_JWKS_URL", "https://api-auth.web3auth.io/jwks")
+WEB3AUTH_EXPECTED_ISSUER = os.getenv("WEB3AUTH_EXPECTED_ISSUER", "https://api-auth.web3auth.io")
+WEB3AUTH_CLIENT_ID = os.getenv("WEB3AUTH_CLIENT_ID", "")
 CLAIM_LOG_WINDOW = int(os.getenv("CLAIM_LOG_WINDOW", "2000"))
 claim_events = []
 claim_log_lock = Lock()
+
+_web3auth_jwk_client = None
+
+
+def _log_startup_health_checks():
+    if WEB3AUTH_ID_TOKEN_REQUIRED:
+        if jwt is None or PyJWKClient is None:
+            print("STARTUP_WARNING: Web3Auth id-token verification requires PyJWT[crypto] (or PyJWT + cryptography).")
+        if not WEB3AUTH_CLIENT_ID:
+            print("STARTUP_WARNING: WEB3AUTH_CLIENT_ID is empty; Web3Auth authenticated claims will be rejected.")
+        if not WEB3AUTH_JWKS_URL:
+            print("STARTUP_WARNING: WEB3AUTH_JWKS_URL is empty; Web3Auth authenticated claims will be rejected.")
+
+
+_log_startup_health_checks()
+
+
+def _get_web3auth_jwk_client():
+    global _web3auth_jwk_client
+    if _web3auth_jwk_client is None and WEB3AUTH_JWKS_URL and PyJWKClient is not None:
+        _web3auth_jwk_client = PyJWKClient(WEB3AUTH_JWKS_URL)
+    return _web3auth_jwk_client
 
 
 def _consume_claim_session_token(session_token: str):
@@ -648,6 +688,155 @@ def _check_and_increment_ip_cooldown(ip_address: str):
         print("IP COOLDOWN ERROR:", str(cooldown_err))
         return False, 0, 0, "backend_error"
 
+
+def _build_claim_challenge_message(recipient: str, nonce_id: str, issued_at: datetime, expires_at: datetime) -> str:
+    return (
+        "Abay GERD Token Claim Verification\n"
+        f"Domain: {CLAIM_CHALLENGE_DOMAIN}\n"
+        "Purpose: Prove wallet ownership for one-time token claim\n"
+        f"Wallet: {recipient}\n"
+        f"Nonce: {nonce_id}\n"
+        f"Issued At (UTC): {issued_at.isoformat()}Z\n"
+        f"Expires At (UTC): {expires_at.isoformat()}Z\n"
+        "Do not share this signature with anyone."
+    )
+
+
+def _verify_and_consume_claim_challenge(recipient: str, nonce_id: str, signature: str, ip_address: str, user_agent: str):
+    nonce_value = str(nonce_id or "").strip()
+    sig_value = str(signature or "").strip()
+    if not nonce_value:
+        return False, "nonce_missing", 0
+    if not sig_value:
+        return False, "signature_missing", 0
+
+    challenge_ref = db.collection(CLAIM_CHALLENGE_COLLECTION).document(nonce_value)
+    tx = db.transaction()
+
+    @firestore.transactional
+    def _consume_challenge(transaction, ref):
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            return False, "nonce_invalid", 0
+
+        data = snap.to_dict() or {}
+        if bool(data.get("used", False)):
+            return False, "nonce_reused", int(data.get("attempts", 0) or 0)
+
+        expires_at = data.get("expires_at")
+        if not isinstance(expires_at, datetime):
+            transaction.delete(ref)
+            return False, "nonce_invalid_expiry", int(data.get("attempts", 0) or 0)
+
+        now = datetime.now(expires_at.tzinfo) if expires_at.tzinfo else datetime.utcnow()
+        if now > expires_at:
+            transaction.update(ref, {
+                "used": True,
+                "used_reason": "expired",
+                "used_at": now,
+            })
+            return False, "nonce_expired", int(data.get("attempts", 0) or 0)
+
+        stored_recipient = str(data.get("recipient", "")).strip()
+        if not stored_recipient:
+            return False, "nonce_invalid_recipient", int(data.get("attempts", 0) or 0)
+
+        if Web3.to_checksum_address(stored_recipient) != Web3.to_checksum_address(recipient):
+            return False, "nonce_wallet_mismatch", int(data.get("attempts", 0) or 0)
+
+        attempts = int(data.get("attempts", 0) or 0)
+        max_attempts = int(data.get("max_attempts", CLAIM_CHALLENGE_MAX_ATTEMPTS) or CLAIM_CHALLENGE_MAX_ATTEMPTS)
+        if attempts >= max_attempts:
+            return False, "nonce_attempts_exceeded", attempts
+
+        message = str(data.get("message", "")).strip()
+        if not message:
+            return False, "nonce_invalid_message", attempts
+
+        try:
+            recovered = Account.recover_message(encode_defunct(text=message), signature=sig_value)
+            recovered_checksum = Web3.to_checksum_address(recovered)
+            recipient_checksum = Web3.to_checksum_address(recipient)
+        except Exception:
+            next_attempts = attempts + 1
+            transaction.update(ref, {
+                "attempts": next_attempts,
+                "last_attempt_at": now,
+                "last_attempt_ip": str(ip_address),
+                "last_attempt_ua": str(user_agent)[:220],
+            })
+            return False, "signature_invalid", next_attempts
+
+        if recovered_checksum != recipient_checksum:
+            next_attempts = attempts + 1
+            transaction.update(ref, {
+                "attempts": next_attempts,
+                "last_attempt_at": now,
+                "last_attempt_ip": str(ip_address),
+                "last_attempt_ua": str(user_agent)[:220],
+                "last_recovered": recovered_checksum,
+            })
+            return False, "signature_wallet_mismatch", next_attempts
+
+        transaction.update(ref, {
+            "used": True,
+            "used_at": now,
+            "used_reason": "verified",
+            "attempts": attempts + 1,
+            "verified_ip": str(ip_address),
+            "verified_ua": str(user_agent)[:220],
+            "verified_wallet": recovered_checksum,
+        })
+        return True, "ok", attempts + 1
+
+    try:
+        return _consume_challenge(tx, challenge_ref)
+    except Exception as challenge_err:
+        print("CLAIM CHALLENGE VERIFY ERROR:", str(challenge_err))
+        return False, "backend_error", 0
+
+
+def _verify_web3auth_id_token(id_token: str):
+    token_value = str(id_token or "").strip()
+    if not token_value:
+        return False, "web3auth_id_token_missing", {}
+
+    if jwt is None or PyJWKClient is None:
+        return False, "web3auth_jwt_library_missing", {}
+
+    if not WEB3AUTH_JWKS_URL:
+        return False, "web3auth_jwks_url_missing", {}
+
+    options = {
+        "verify_signature": True,
+        "verify_exp": True,
+        "verify_iat": True,
+        "verify_nbf": True,
+        "verify_iss": bool(WEB3AUTH_EXPECTED_ISSUER),
+        "verify_aud": bool(WEB3AUTH_CLIENT_ID),
+    }
+
+    try:
+        jwk_client = _get_web3auth_jwk_client()
+        signing_key = jwk_client.get_signing_key_from_jwt(token_value)
+        claims = jwt.decode(
+            token_value,
+            signing_key.key,
+            algorithms=["ES256", "RS256"],
+            audience=WEB3AUTH_CLIENT_ID if WEB3AUTH_CLIENT_ID else None,
+            issuer=WEB3AUTH_EXPECTED_ISSUER if WEB3AUTH_EXPECTED_ISSUER else None,
+            options=options,
+        )
+    except Exception as token_err:
+        print("WEB3AUTH TOKEN VERIFY ERROR:", str(token_err))
+        return False, "web3auth_id_token_invalid", {}
+
+    sub = str(claims.get("sub", "")).strip()
+    if not sub:
+        return False, "web3auth_sub_missing", {}
+
+    return True, "ok", claims
+
 @app.route('/')
 def home():
     return "Abay GERD Token API is running."
@@ -732,11 +921,52 @@ def generate_session_token():
 
     return jsonify({'session_token': token, 'expires_in_seconds': SESSION_TOKEN_TTL_MINUTES * 60})
 
+
+@app.route('/claim/challenge', methods=['POST'])
+def create_claim_challenge():
+    data = request.get_json(silent=True) or {}
+    recipient_raw = data.get('recipient')
+
+    if not Web3.is_address(recipient_raw):
+        return jsonify({'status': 'error', 'message': 'Invalid wallet address'}), 400
+
+    recipient = Web3.to_checksum_address(recipient_raw)
+    now = datetime.utcnow()
+    expires_at = now + timedelta(minutes=CLAIM_CHALLENGE_TTL_MINUTES)
+    nonce_id = secrets.token_urlsafe(24)
+    message = _build_claim_challenge_message(recipient, nonce_id, now, expires_at)
+
+    try:
+        db.collection(CLAIM_CHALLENGE_COLLECTION).document(nonce_id).set({
+            'recipient': recipient,
+            'message': message,
+            'created_at': now,
+            'expires_at': expires_at,
+            'used': False,
+            'attempts': 0,
+            'max_attempts': CLAIM_CHALLENGE_MAX_ATTEMPTS,
+            'ip': _get_client_ip(),
+            'ua': request.headers.get('User-Agent', '')[:220],
+        })
+    except Exception as challenge_err:
+        print('CLAIM CHALLENGE CREATE ERROR:', str(challenge_err))
+        return jsonify({'status': 'error', 'message': 'Could not create challenge'}), 500
+
+    return jsonify({
+        'status': 'success',
+        'nonce_id': nonce_id,
+        'message': message,
+        'expires_in_seconds': CLAIM_CHALLENGE_TTL_MINUTES * 60,
+        'max_attempts': CLAIM_CHALLENGE_MAX_ATTEMPTS,
+    })
+
 @app.route('/send-token', methods=['POST'])
 def send_token():
     data = {}
     wallet_ref = None
+    identity_ref = None
     claim_reserved = False
+    identity_reserved = False
     tx_hash_hex = ''
     request_id = secrets.token_hex(8)
     client_ip = _get_client_ip()
@@ -878,11 +1108,76 @@ def send_token():
         elif RECAPTCHA_ENFORCE_V3:
             return _error_response(400, 'Captcha score missing', 'recaptcha_score_missing')
 
-        recipient_raw = data.get("recipient")
-        if not Web3.is_address(recipient_raw):
-            return _error_response(400, 'Invalid wallet address', 'recipient_invalid')
+        etn_session_id = request.cookies.get("etn_session")
+        etn_session = _get_etn_session(etn_session_id) if etn_session_id else None
+        claim_mode = "direct"
+        identity_key = ""
 
-        recipient = Web3.to_checksum_address(recipient_raw)
+        if etn_session:
+            etn_claims = etn_session.get("claims", {}) or {}
+            etn_sub = str(etn_claims.get("sub", "")).strip()
+            etn_wallet = str(etn_claims.get("wallet_address", "")).strip()
+            if not etn_sub or not Web3.is_address(etn_wallet):
+                return _error_response(401, 'Invalid ETN session for claim', 'etn_session_invalid')
+            claim_mode = "authenticated"
+            identity_key = f"etn:{etn_sub}"
+            recipient = Web3.to_checksum_address(etn_wallet)
+        else:
+            auth_provider = str(data.get("auth_provider", "")).strip().lower()
+            authenticated_wallet = str(data.get("authenticated_wallet", "")).strip()
+
+            if auth_provider == "web3auth":
+                if not Web3.is_address(authenticated_wallet):
+                    return _error_response(400, 'Authenticated wallet is invalid', 'web3auth_wallet_invalid')
+
+                web3auth_id_token = data.get("web3auth_id_token")
+                token_ok, token_reason, token_claims = _verify_web3auth_id_token(web3auth_id_token)
+                if not token_ok:
+                    if WEB3AUTH_ID_TOKEN_REQUIRED:
+                        if token_reason == "web3auth_jwt_library_missing":
+                            return _error_response(503, 'Web3Auth token verification is not configured on the server.', 'web3auth_verify_unavailable')
+                        return _error_response(401, 'Invalid Web3Auth session. Please login again.', token_reason)
+                    token_claims = {}
+
+                claim_mode = "authenticated"
+                recipient = Web3.to_checksum_address(authenticated_wallet)
+                token_sub = str(token_claims.get("sub", "")).strip()
+                if token_sub:
+                    identity_key = f"web3auth:{token_sub}"
+                else:
+                    identity_key = f"web3auth_wallet:{recipient.lower()}"
+            else:
+                recipient_raw = data.get("recipient")
+                if not Web3.is_address(recipient_raw):
+                    return _error_response(400, 'Invalid wallet address', 'recipient_invalid')
+
+                recipient = Web3.to_checksum_address(recipient_raw)
+                nonce_id = data.get("nonce_id")
+                signature = data.get("signature")
+                challenge_ok, challenge_reason, challenge_attempts = _verify_and_consume_claim_challenge(
+                    recipient=recipient,
+                    nonce_id=nonce_id,
+                    signature=signature,
+                    ip_address=str(user_ip),
+                    user_agent=str(user_agent),
+                )
+                if not challenge_ok:
+                    if challenge_reason == "nonce_attempts_exceeded":
+                        return _error_response(
+                            429,
+                            'Signature verification attempts exceeded for this wallet. Please request a new challenge.',
+                            'nonce_attempts_exceeded',
+                            attempts=challenge_attempts,
+                            max_attempts=CLAIM_CHALLENGE_MAX_ATTEMPTS,
+                        )
+                    if challenge_reason == "backend_error":
+                        return _error_response(503, 'Signature verification unavailable. Please retry.', 'signature_verify_backend_error')
+                    return _error_response(
+                        400,
+                        'Wallet ownership verification failed. Please sign a new challenge and try again.',
+                        challenge_reason,
+                        attempts=challenge_attempts,
+                    )
 
         wallet_ref = db.collection('wallet_claims').document(recipient)
 
@@ -970,6 +1265,28 @@ def send_token():
         amount_scaled = int(amount_tokens * (10 ** TOKEN_DECIMALS))
         amount_str = str(amount_scaled)
 
+        if claim_mode == "authenticated":
+            if not identity_key:
+                return _error_response(400, 'Missing identity key for authenticated claim', 'identity_key_missing')
+
+            identity_ref = db.collection(IDENTITY_CLAIMS_COLLECTION).document(identity_key)
+            try:
+                identity_ref.create({
+                    'status': 'pending',
+                    'created_at': datetime.utcnow().isoformat() + "Z",
+                    'ip': str(user_ip),
+                    'recipient': recipient,
+                    'mode': claim_mode,
+                })
+                identity_reserved = True
+            except AlreadyExists:
+                return _error_response(
+                    400,
+                    'This identity has already claimed GERD token.',
+                    'identity_already_claimed',
+                    identity_key=identity_key,
+                )
+
         try:
             wallet_ref.create({
                 'status': 'pending',
@@ -1009,6 +1326,16 @@ def send_token():
             'tx_hash': tx_hash_hex
         }, merge=True)
 
+        if identity_reserved and identity_ref is not None:
+            identity_ref.set({
+                'status': 'completed',
+                'claimed_at': datetime.utcnow().isoformat() + "Z",
+                'ip': str(user_ip),
+                'recipient': recipient,
+                'tx_hash': tx_hash_hex,
+                'mode': claim_mode,
+            }, merge=True)
+
         db.collection('user_data').add({
             'wallet_address': str(recipient),
             'ip': str(user_ip),
@@ -1016,7 +1343,9 @@ def send_token():
             'city': str(city),
             'token_amount': amount_str,
             'claimed_at': datetime.utcnow().isoformat() + "Z",
-            'tx_hash': tx_hash_hex
+            'tx_hash': tx_hash_hex,
+            'claim_mode': claim_mode,
+            'identity_key': identity_key,
         })
 
         if ip_claim_doc.exists:
@@ -1029,6 +1358,8 @@ def send_token():
             status_code=200,
             ip=str(user_ip),
             recipient=recipient,
+            claim_mode=claim_mode,
+            identity_key=identity_key,
             country=country_code.upper(),
             city=str(city),
             tx_hash=tx_hash_hex,
@@ -1040,6 +1371,11 @@ def send_token():
         if claim_reserved and wallet_ref is not None and not tx_hash_hex:
             try:
                 wallet_ref.delete()
+            except Exception:
+                pass
+        if identity_reserved and identity_ref is not None and not tx_hash_hex:
+            try:
+                identity_ref.delete()
             except Exception:
                 pass
         db.collection('failed_data').add({
