@@ -1133,11 +1133,40 @@ def send_token():
                 web3auth_id_token = data.get("web3auth_id_token")
                 token_ok, token_reason, token_claims = _verify_web3auth_id_token(web3auth_id_token)
                 if not token_ok:
-                    if WEB3AUTH_ID_TOKEN_REQUIRED:
-                        if token_reason == "web3auth_jwt_library_missing":
-                            return _error_response(503, 'Web3Auth token verification is not configured on the server.', 'web3auth_verify_unavailable')
-                        return _error_response(401, 'Invalid Web3Auth session. Please login again.', token_reason)
-                    token_claims = {}
+                    nonce_id = data.get("nonce_id")
+                    signature = data.get("signature")
+                    if nonce_id and signature:
+                        challenge_ok, challenge_reason, challenge_attempts = _verify_and_consume_claim_challenge(
+                            recipient=Web3.to_checksum_address(authenticated_wallet),
+                            nonce_id=nonce_id,
+                            signature=signature,
+                            ip_address=str(user_ip),
+                            user_agent=str(user_agent),
+                        )
+                        if not challenge_ok:
+                            if challenge_reason == "nonce_attempts_exceeded":
+                                return _error_response(
+                                    429,
+                                    'Signature verification attempts exceeded for this wallet. Please request a new challenge.',
+                                    'nonce_attempts_exceeded',
+                                    attempts=challenge_attempts,
+                                    max_attempts=CLAIM_CHALLENGE_MAX_ATTEMPTS,
+                                )
+                            if challenge_reason == "backend_error":
+                                return _error_response(503, 'Signature verification unavailable. Please retry.', 'signature_verify_backend_error')
+                            return _error_response(
+                                400,
+                                'Wallet ownership verification failed. Please sign a new challenge and try again.',
+                                challenge_reason,
+                                attempts=challenge_attempts,
+                            )
+                        token_claims = {}
+                    else:
+                        if WEB3AUTH_ID_TOKEN_REQUIRED:
+                            if token_reason == "web3auth_jwt_library_missing":
+                                return _error_response(503, 'Web3Auth token verification is not configured on the server.', 'web3auth_verify_unavailable')
+                            return _error_response(401, 'Invalid Web3Auth session. Please login again.', token_reason)
+                        token_claims = {}
 
                 claim_mode = "authenticated"
                 recipient = Web3.to_checksum_address(authenticated_wallet)
