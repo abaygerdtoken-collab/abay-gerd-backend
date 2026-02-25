@@ -1301,7 +1301,7 @@ def claim_log_health():
                 'window_minutes': CLAIM_PAUSE_WINDOW_MINUTES,
                 'pause_minutes': CLAIM_PAUSE_DURATION_MINUTES,
             },
-            'successful_claims_in_policy_window': success_claims_in_policy_window,
+            'successful_claims_in_policy_window': successful_claims_in_policy_window,
             'attempts_in_policy_window': attempts_in_policy_window,
             'pause_backend_error': pause_backend_error,
         }
