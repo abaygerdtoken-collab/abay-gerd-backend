@@ -557,41 +557,119 @@ CLAIM_PAUSE_MESSAGE = os.getenv(
     "CLAIM_PAUSE_MESSAGE",
     "Claims are temporarily paused. Please try after 30 min."
 )
-claim_success_timestamps = []
-claim_pause_until_ts = 0.0
-claim_pause_lock = Lock()
+CLAIM_PAUSE_COLLECTION = os.getenv("CLAIM_PAUSE_COLLECTION", "claim_pause_global")
+CLAIM_PAUSE_STATE_DOC = os.getenv("CLAIM_PAUSE_STATE_DOC", "global")
+CLAIM_PAUSE_BUCKETS_SUBCOLLECTION = os.getenv("CLAIM_PAUSE_BUCKETS_SUBCOLLECTION", "minute_buckets")
 
 
-def _prune_success_claims(now_ts: float):
-    global claim_success_timestamps
-    cutoff_ts = now_ts - (CLAIM_PAUSE_WINDOW_MINUTES * 60)
-    claim_success_timestamps = [ts for ts in claim_success_timestamps if ts >= cutoff_ts]
+def _claim_pause_state_ref():
+    return db.collection(CLAIM_PAUSE_COLLECTION).document(CLAIM_PAUSE_STATE_DOC)
+
+
+def _claim_pause_bucket_ref(bucket_minute: int):
+    return _claim_pause_state_ref().collection(CLAIM_PAUSE_BUCKETS_SUBCOLLECTION).document(str(bucket_minute))
+
+
+def _claim_pause_window_bucket_keys(now_ts: float):
+    now_minute = int(now_ts // 60)
+    start_minute = now_minute - CLAIM_PAUSE_WINDOW_MINUTES + 1
+    return list(range(start_minute, now_minute + 1))
 
 
 def _get_pause_state(now_ts: float):
-    with claim_pause_lock:
-        _prune_success_claims(now_ts)
-        paused = claim_pause_until_ts > now_ts
-        retry_after = max(0, int(claim_pause_until_ts - now_ts)) if paused else 0
-        return paused, retry_after, claim_pause_until_ts, len(claim_success_timestamps)
+    state_ref = _claim_pause_state_ref()
+    bucket_keys = _claim_pause_window_bucket_keys(now_ts)
+
+    pause_until_ts = 0.0
+    attempts_in_window = 0
+
+    state_snap = state_ref.get()
+    if state_snap.exists:
+        state_data = state_snap.to_dict() or {}
+        try:
+            pause_until_ts = float(state_data.get('pause_until_ts', 0.0) or 0.0)
+        except Exception:
+            pause_until_ts = 0.0
+
+    for bucket_key in bucket_keys:
+        bucket_snap = _claim_pause_bucket_ref(bucket_key).get()
+        if not bucket_snap.exists:
+            continue
+        bucket_data = bucket_snap.to_dict() or {}
+        attempts_in_window += int(bucket_data.get('count', 0) or 0)
+
+    paused = pause_until_ts > now_ts
+    retry_after = max(0, int(pause_until_ts - now_ts)) if paused else 0
+    return paused, retry_after, pause_until_ts, attempts_in_window
 
 
-def _record_success_and_maybe_pause(now_ts: float):
-    global claim_pause_until_ts
-    with claim_pause_lock:
-        _prune_success_claims(now_ts)
-        claim_success_timestamps.append(now_ts)
-        _prune_success_claims(now_ts)
+def _register_attempt_or_pause(now_ts: float):
+    state_ref = _claim_pause_state_ref()
+    bucket_keys = _claim_pause_window_bucket_keys(now_ts)
+    bucket_refs = [_claim_pause_bucket_ref(k) for k in bucket_keys]
+    current_bucket_minute = bucket_keys[-1]
+    current_bucket_ref = bucket_refs[-1]
+    tx = db.transaction()
 
-        triggered = len(claim_success_timestamps) > CLAIM_PAUSE_THRESHOLD
-        if triggered:
-            pause_until = now_ts + (CLAIM_PAUSE_DURATION_MINUTES * 60)
-            if pause_until > claim_pause_until_ts:
-                claim_pause_until_ts = pause_until
+    @firestore.transactional
+    def _apply(transaction):
+        state_snap = state_ref.get(transaction=transaction)
+        pause_until_ts = 0.0
+        if state_snap.exists:
+            state_data = state_snap.to_dict() or {}
+            try:
+                pause_until_ts = float(state_data.get('pause_until_ts', 0.0) or 0.0)
+            except Exception:
+                pause_until_ts = 0.0
 
-        paused = claim_pause_until_ts > now_ts
-        retry_after = max(0, int(claim_pause_until_ts - now_ts)) if paused else 0
-        return triggered, paused, retry_after, claim_pause_until_ts, len(claim_success_timestamps)
+        bucket_snaps = [ref.get(transaction=transaction) for ref in bucket_refs]
+        attempts_in_window = 0
+        current_bucket_count = 0
+        for index, snap in enumerate(bucket_snaps):
+            if not snap.exists:
+                continue
+            data = snap.to_dict() or {}
+            count_val = int(data.get('count', 0) or 0)
+            attempts_in_window += count_val
+            if index == len(bucket_snaps) - 1:
+                current_bucket_count = count_val
+
+        if pause_until_ts > now_ts:
+            retry_after = max(0, int(pause_until_ts - now_ts))
+            return False, True, retry_after, pause_until_ts, attempts_in_window, 'pause_active'
+
+        if attempts_in_window >= CLAIM_PAUSE_THRESHOLD:
+            pause_until_ts = now_ts + (CLAIM_PAUSE_DURATION_MINUTES * 60)
+            now_dt = datetime.utcnow()
+            transaction.set(state_ref, {
+                'pause_until_ts': pause_until_ts,
+                'updated_at': now_dt,
+                'last_triggered_at': now_dt,
+                'policy': {
+                    'threshold_claims': CLAIM_PAUSE_THRESHOLD,
+                    'window_minutes': CLAIM_PAUSE_WINDOW_MINUTES,
+                    'pause_minutes': CLAIM_PAUSE_DURATION_MINUTES,
+                }
+            }, merge=True)
+            retry_after = max(0, int(pause_until_ts - now_ts))
+            return False, True, retry_after, pause_until_ts, attempts_in_window, 'pause_triggered'
+
+        now_dt = datetime.utcnow()
+        transaction.set(current_bucket_ref, {
+            'count': current_bucket_count + 1,
+            'bucket_minute': current_bucket_minute,
+            'bucket_started_at': datetime.utcfromtimestamp(current_bucket_minute * 60),
+            'updated_at': now_dt,
+            'expiresAt': now_dt + timedelta(minutes=(CLAIM_PAUSE_WINDOW_MINUTES + CLAIM_PAUSE_DURATION_MINUTES + 60)),
+        }, merge=True)
+        transaction.set(state_ref, {'updated_at': now_dt}, merge=True)
+        return True, False, 0, pause_until_ts, attempts_in_window + 1, 'ok'
+
+    try:
+        return _apply(tx)
+    except Exception as pause_err:
+        print("CLAIM PAUSE GLOBAL ERROR:", str(pause_err))
+        return False, False, 0, 0.0, 0, 'backend_error'
 
 
 def _consume_claim_session_token(session_token: str):
@@ -818,8 +896,28 @@ def send_token():
 
     try:
         now_ts = time.time()
-        paused, retry_after, pause_until, success_count_window = _get_pause_state(now_ts)
-        if paused:
+        allowed, now_paused, retry_after, pause_until, attempt_count_window, pause_reason = _register_attempt_or_pause(now_ts)
+        if not allowed and pause_reason == 'backend_error':
+            return _error_response(
+                503,
+                'Claim pause check unavailable. Please retry in a moment.',
+                'global_claim_pause_backend_error',
+            )
+
+        if not allowed:
+            if pause_reason == 'pause_triggered':
+                _claim_log(
+                    'claim_pause_triggered',
+                    status_code=429,
+                    reason='global_claim_pause_triggered_at_ingress',
+                    pause_until_unix=pause_until,
+                    retry_after_seconds=retry_after,
+                    attempts_in_window=attempt_count_window,
+                    pause_threshold=CLAIM_PAUSE_THRESHOLD,
+                    pause_window_minutes=CLAIM_PAUSE_WINDOW_MINUTES,
+                    pause_duration_minutes=CLAIM_PAUSE_DURATION_MINUTES,
+                    is_paused=now_paused,
+                )
             return _error_response(
                 429,
                 CLAIM_PAUSE_MESSAGE,
@@ -827,7 +925,7 @@ def send_token():
                 retry_after_header=retry_after,
                 retry_after_seconds=retry_after,
                 pause_until_unix=pause_until,
-                success_claims_in_window=success_count_window,
+                attempts_in_window=attempt_count_window,
                 pause_threshold=CLAIM_PAUSE_THRESHOLD,
                 pause_window_minutes=CLAIM_PAUSE_WINDOW_MINUTES,
                 pause_duration_minutes=CLAIM_PAUSE_DURATION_MINUTES,
@@ -1097,21 +1195,6 @@ def send_token():
             tx_hash=tx_hash_hex,
         )
 
-        triggered, now_paused, retry_after, pause_until, success_count_window = _record_success_and_maybe_pause(time.time())
-        if triggered:
-            _claim_log(
-                'claim_pause_triggered',
-                status_code=200,
-                reason='global_claim_pause_triggered',
-                pause_until_unix=pause_until,
-                retry_after_seconds=retry_after,
-                success_claims_in_window=success_count_window,
-                pause_threshold=CLAIM_PAUSE_THRESHOLD,
-                pause_window_minutes=CLAIM_PAUSE_WINDOW_MINUTES,
-                pause_duration_minutes=CLAIM_PAUSE_DURATION_MINUTES,
-                is_paused=now_paused,
-            )
-
         return jsonify({'status': 'success', 'tx_hash': tx_hash_hex, 'request_id': request_id})
 
     except Exception as e:
@@ -1186,7 +1269,18 @@ def claim_log_health():
     ]
 
     pause_now = time.time()
-    is_paused, retry_after_seconds, pause_until_unix, success_claims_in_policy_window = _get_pause_state(pause_now)
+    policy_cutoff_ts = pause_now - (CLAIM_PAUSE_WINDOW_MINUTES * 60)
+    successful_claims_in_policy_window = len([
+        e for e in events_snapshot
+        if e.get('event') == 'claim_success' and float(e.get('ts_unix', 0)) >= policy_cutoff_ts
+    ])
+
+    try:
+        is_paused, retry_after_seconds, pause_until_unix, attempts_in_policy_window = _get_pause_state(pause_now)
+        pause_backend_error = None
+    except Exception as pause_state_err:
+        is_paused, retry_after_seconds, pause_until_unix, attempts_in_policy_window = False, 0, 0.0, 0
+        pause_backend_error = str(pause_state_err)
 
     return jsonify({
         'status': 'ok',
@@ -1208,8 +1302,52 @@ def claim_log_health():
                 'pause_minutes': CLAIM_PAUSE_DURATION_MINUTES,
             },
             'successful_claims_in_policy_window': success_claims_in_policy_window,
+            'attempts_in_policy_window': attempts_in_policy_window,
+            'pause_backend_error': pause_backend_error,
         }
     })
+
+
+@app.route('/admin/claim-pause/reset', methods=['POST'])
+def claim_pause_reset():
+    admin_metrics_key = os.getenv("ADMIN_METRICS_KEY", "")
+    provided_key = request.headers.get("X-Admin-Key", "")
+    if admin_metrics_key and not hmac.compare_digest(provided_key, admin_metrics_key):
+        return jsonify({'status': 'error', 'message': 'Forbidden'}), 403
+
+    state_ref = _claim_pause_state_ref()
+    now_utc = datetime.utcnow()
+
+    try:
+        state_ref.set({
+            'pause_until_ts': 0.0,
+            'updated_at': now_utc,
+            'last_manual_reset_at': now_utc,
+            'last_manual_reset_by': request.headers.get('X-Admin-Actor', 'unknown')[:120],
+        }, merge=True)
+
+        is_paused, retry_after_seconds, pause_until_unix, attempts_in_policy_window = _get_pause_state(time.time())
+        return jsonify({
+            'status': 'ok',
+            'message': 'Global claim pause reset.',
+            'claim_pause': {
+                'is_paused': is_paused,
+                'pause_until_unix': pause_until_unix,
+                'retry_after_seconds': retry_after_seconds,
+                'attempts_in_policy_window': attempts_in_policy_window,
+                'policy': {
+                    'threshold_claims': CLAIM_PAUSE_THRESHOLD,
+                    'window_minutes': CLAIM_PAUSE_WINDOW_MINUTES,
+                    'pause_minutes': CLAIM_PAUSE_DURATION_MINUTES,
+                },
+            }
+        })
+    except Exception as reset_err:
+        return jsonify({
+            'status': 'error',
+            'message': 'Failed to reset global claim pause',
+            'details': str(reset_err)
+        }), 500
 
 # ==========================================================
 # ETN Identity OAuth (Authorization Code + PKCE)
