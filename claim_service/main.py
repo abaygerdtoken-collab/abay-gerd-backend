@@ -550,6 +550,49 @@ CLAIM_LOG_WINDOW = int(os.getenv("CLAIM_LOG_WINDOW", "2000"))
 claim_events = []
 claim_log_lock = Lock()
 
+CLAIM_PAUSE_THRESHOLD = int(os.getenv("CLAIM_PAUSE_THRESHOLD", "10"))
+CLAIM_PAUSE_WINDOW_MINUTES = int(os.getenv("CLAIM_PAUSE_WINDOW_MINUTES", "10"))
+CLAIM_PAUSE_DURATION_MINUTES = int(os.getenv("CLAIM_PAUSE_DURATION_MINUTES", "30"))
+CLAIM_PAUSE_MESSAGE = os.getenv(
+    "CLAIM_PAUSE_MESSAGE",
+    "Claims are temporarily paused. Please try after 30 min."
+)
+claim_success_timestamps = []
+claim_pause_until_ts = 0.0
+claim_pause_lock = Lock()
+
+
+def _prune_success_claims(now_ts: float):
+    global claim_success_timestamps
+    cutoff_ts = now_ts - (CLAIM_PAUSE_WINDOW_MINUTES * 60)
+    claim_success_timestamps = [ts for ts in claim_success_timestamps if ts >= cutoff_ts]
+
+
+def _get_pause_state(now_ts: float):
+    with claim_pause_lock:
+        _prune_success_claims(now_ts)
+        paused = claim_pause_until_ts > now_ts
+        retry_after = max(0, int(claim_pause_until_ts - now_ts)) if paused else 0
+        return paused, retry_after, claim_pause_until_ts, len(claim_success_timestamps)
+
+
+def _record_success_and_maybe_pause(now_ts: float):
+    global claim_pause_until_ts
+    with claim_pause_lock:
+        _prune_success_claims(now_ts)
+        claim_success_timestamps.append(now_ts)
+        _prune_success_claims(now_ts)
+
+        triggered = len(claim_success_timestamps) > CLAIM_PAUSE_THRESHOLD
+        if triggered:
+            pause_until = now_ts + (CLAIM_PAUSE_DURATION_MINUTES * 60)
+            if pause_until > claim_pause_until_ts:
+                claim_pause_until_ts = pause_until
+
+        paused = claim_pause_until_ts > now_ts
+        retry_after = max(0, int(claim_pause_until_ts - now_ts)) if paused else 0
+        return triggered, paused, retry_after, claim_pause_until_ts, len(claim_success_timestamps)
+
 
 def _consume_claim_session_token(session_token: str):
     token = str(session_token or "").strip()
@@ -757,7 +800,7 @@ def send_token():
                 del claim_events[0:len(claim_events) - CLAIM_LOG_WINDOW]
         print("CLAIM_LOG", json.dumps(payload, ensure_ascii=False, default=str))
 
-    def _error_response(status_code: int, message: str, reason: str, **fields):
+    def _error_response(status_code: int, message: str, reason: str, retry_after_header: int = 0, **fields):
         _claim_log(
             'claim_rejected',
             status_code=status_code,
@@ -767,9 +810,29 @@ def send_token():
             ua=str(user_agent)[:220],
             **fields,
         )
-        return jsonify({'status': 'error', 'message': message, 'request_id': request_id}), status_code
+        response = jsonify({'status': 'error', 'message': message, 'request_id': request_id})
+        response.status_code = status_code
+        if status_code == 429 and int(retry_after_header or 0) > 0:
+            response.headers['Retry-After'] = str(int(retry_after_header))
+        return response
 
     try:
+        now_ts = time.time()
+        paused, retry_after, pause_until, success_count_window = _get_pause_state(now_ts)
+        if paused:
+            return _error_response(
+                429,
+                CLAIM_PAUSE_MESSAGE,
+                'global_claim_pause_active',
+                retry_after_header=retry_after,
+                retry_after_seconds=retry_after,
+                pause_until_unix=pause_until,
+                success_claims_in_window=success_count_window,
+                pause_threshold=CLAIM_PAUSE_THRESHOLD,
+                pause_window_minutes=CLAIM_PAUSE_WINDOW_MINUTES,
+                pause_duration_minutes=CLAIM_PAUSE_DURATION_MINUTES,
+            )
+
         # -------------------------
         # EARLY IP BLOCK (cheapest)
         # -------------------------
@@ -1034,6 +1097,21 @@ def send_token():
             tx_hash=tx_hash_hex,
         )
 
+        triggered, now_paused, retry_after, pause_until, success_count_window = _record_success_and_maybe_pause(time.time())
+        if triggered:
+            _claim_log(
+                'claim_pause_triggered',
+                status_code=200,
+                reason='global_claim_pause_triggered',
+                pause_until_unix=pause_until,
+                retry_after_seconds=retry_after,
+                success_claims_in_window=success_count_window,
+                pause_threshold=CLAIM_PAUSE_THRESHOLD,
+                pause_window_minutes=CLAIM_PAUSE_WINDOW_MINUTES,
+                pause_duration_minutes=CLAIM_PAUSE_DURATION_MINUTES,
+                is_paused=now_paused,
+            )
+
         return jsonify({'status': 'success', 'tx_hash': tx_hash_hex, 'request_id': request_id})
 
     except Exception as e:
@@ -1107,6 +1185,9 @@ def claim_log_health():
         for event in rejected_recent[-20:]
     ]
 
+    pause_now = time.time()
+    is_paused, retry_after_seconds, pause_until_unix, success_claims_in_policy_window = _get_pause_state(pause_now)
+
     return jsonify({
         'status': 'ok',
         'window_minutes': minutes,
@@ -1116,6 +1197,18 @@ def claim_log_health():
         'rejections_in_window': len(rejected_recent),
         'counts_by_reason': sorted_counts,
         'recent_rejections': sample_recent,
+        'claim_pause': {
+            'is_paused': is_paused,
+            'pause_until_unix': pause_until_unix,
+            'retry_after_seconds': retry_after_seconds,
+            'message': CLAIM_PAUSE_MESSAGE,
+            'policy': {
+                'threshold_claims': CLAIM_PAUSE_THRESHOLD,
+                'window_minutes': CLAIM_PAUSE_WINDOW_MINUTES,
+                'pause_minutes': CLAIM_PAUSE_DURATION_MINUTES,
+            },
+            'successful_claims_in_policy_window': success_claims_in_policy_window,
+        }
     })
 
 # ==========================================================
