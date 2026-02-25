@@ -542,6 +542,10 @@ db = firestore.client()
 
 CLAIM_SESSION_COLLECTION = os.getenv("CLAIM_SESSION_COLLECTION", "claim_session_tokens")
 SESSION_TOKEN_TTL_MINUTES = int(os.getenv("SESSION_TOKEN_TTL_MINUTES", "5"))
+ENABLE_IP_COOLDOWN = os.getenv("ENABLE_IP_COOLDOWN", "true").lower() == "true"
+IP_COOLDOWN_CLAIMS = int(os.getenv("IP_COOLDOWN_CLAIMS", "3"))
+IP_COOLDOWN_MINUTES = int(os.getenv("IP_COOLDOWN_MINUTES", "15"))
+IP_COOLDOWN_COLLECTION = os.getenv("IP_COOLDOWN_COLLECTION", "ip_claim_cooldown")
 CLAIM_LOG_WINDOW = int(os.getenv("CLAIM_LOG_WINDOW", "2000"))
 claim_events = []
 claim_log_lock = Lock()
@@ -580,6 +584,69 @@ def _consume_claim_session_token(session_token: str):
     except Exception as token_err:
         print("SESSION TOKEN CONSUME ERROR:", str(token_err))
         return False, "backend_error"
+
+
+def _check_and_increment_ip_cooldown(ip_address: str):
+    ip_value = str(ip_address or "").strip()
+    if not ip_value:
+        return True, 0, 0, "ok"
+
+    cooldown_ref = db.collection(IP_COOLDOWN_COLLECTION).document(ip_value)
+    tx = db.transaction()
+
+    @firestore.transactional
+    def _apply_cooldown(transaction, ref):
+        now = datetime.utcnow()
+        snap = ref.get(transaction=transaction)
+
+        if not snap.exists:
+            transaction.set(ref, {
+                'window_start': now,
+                'count': 1,
+                'updated_at': now,
+            })
+            return True, 1, 0, "ok"
+
+        data = snap.to_dict() or {}
+        window_start = data.get('window_start')
+        current_count = int(data.get('count', 0) or 0)
+
+        if not isinstance(window_start, datetime):
+            transaction.set(ref, {
+                'window_start': now,
+                'count': 1,
+                'updated_at': now,
+            })
+            return True, 1, 0, "ok"
+
+        now_cmp = datetime.now(window_start.tzinfo) if window_start.tzinfo else now
+        elapsed = now_cmp - window_start
+        window_delta = timedelta(minutes=IP_COOLDOWN_MINUTES)
+
+        if elapsed >= window_delta:
+            transaction.set(ref, {
+                'window_start': now,
+                'count': 1,
+                'updated_at': now,
+            })
+            return True, 1, 0, "ok"
+
+        if current_count >= IP_COOLDOWN_CLAIMS:
+            retry_after = int((window_start + window_delta - now_cmp).total_seconds())
+            return False, current_count, max(0, retry_after), "cooldown_exceeded"
+
+        next_count = current_count + 1
+        transaction.update(ref, {
+            'count': next_count,
+            'updated_at': now,
+        })
+        return True, next_count, 0, "ok"
+
+    try:
+        return _apply_cooldown(tx, cooldown_ref)
+    except Exception as cooldown_err:
+        print("IP COOLDOWN ERROR:", str(cooldown_err))
+        return False, 0, 0, "backend_error"
 
 @app.route('/')
 def home():
@@ -871,6 +938,27 @@ def send_token():
 
         if not country_code:
             return _error_response(400, 'Could not determine your country. Claim blocked for safety.', 'country_lookup_failed')
+
+        if ENABLE_IP_COOLDOWN and IP_COOLDOWN_CLAIMS > 0 and IP_COOLDOWN_MINUTES > 0:
+            cooldown_ok, current_window_count, retry_after_seconds, cooldown_reason = _check_and_increment_ip_cooldown(str(user_ip))
+            if not cooldown_ok:
+                if cooldown_reason == "backend_error":
+                    return _error_response(
+                        503,
+                        'Claim throttling check unavailable. Please retry in a moment.',
+                        'ip_cooldown_backend_error',
+                    )
+
+                retry_after_seconds = max(1, int(retry_after_seconds or 0))
+                return _error_response(
+                    429,
+                    f'Too many claim attempts from your IP. Try again in {retry_after_seconds} seconds.',
+                    'ip_cooldown_exceeded',
+                    ip_cooldown_claims=IP_COOLDOWN_CLAIMS,
+                    ip_cooldown_minutes=IP_COOLDOWN_MINUTES,
+                    retry_after_seconds=retry_after_seconds,
+                    current_window_count=int(current_window_count or 0),
+                )
 
         today_str = date.today().isoformat()
         ip_claims_ref = db.collection('ip_claims').document(f"{user_ip}_{today_str}")
