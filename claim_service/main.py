@@ -546,6 +546,10 @@ ENABLE_IP_COOLDOWN = os.getenv("ENABLE_IP_COOLDOWN", "true").lower() == "true"
 IP_COOLDOWN_CLAIMS = int(os.getenv("IP_COOLDOWN_CLAIMS", "3"))
 IP_COOLDOWN_MINUTES = int(os.getenv("IP_COOLDOWN_MINUTES", "15"))
 IP_COOLDOWN_COLLECTION = os.getenv("IP_COOLDOWN_COLLECTION", "ip_claim_cooldown")
+IP_DAILY_CLAIM_LIMIT = int(os.getenv("IP_DAILY_CLAIM_LIMIT", "15"))
+# ET-specific overrides for rolling cooldown and daily cap
+ET_IP_COOLDOWN_CLAIMS = int(os.getenv("ET_IP_COOLDOWN_CLAIMS", "20"))
+ET_IP_DAILY_CLAIM_LIMIT = int(os.getenv("ET_IP_DAILY_CLAIM_LIMIT", "50"))
 CLAIM_LOG_WINDOW = int(os.getenv("CLAIM_LOG_WINDOW", "2000"))
 claim_events = []
 claim_log_lock = Lock()
@@ -560,6 +564,31 @@ CLAIM_PAUSE_MESSAGE = os.getenv(
 CLAIM_PAUSE_COLLECTION = os.getenv("CLAIM_PAUSE_COLLECTION", "claim_pause_global")
 CLAIM_PAUSE_STATE_DOC = os.getenv("CLAIM_PAUSE_STATE_DOC", "global")
 CLAIM_PAUSE_BUCKETS_SUBCOLLECTION = os.getenv("CLAIM_PAUSE_BUCKETS_SUBCOLLECTION", "minute_buckets")
+# Countries exempt from the global claim pause (still subject to all other checks)
+CLAIM_PAUSE_BYPASS_COUNTRIES = set(
+    c.strip().upper()
+    for c in os.getenv("CLAIM_PAUSE_BYPASS_COUNTRIES", "ET").split(",")
+    if c.strip()
+)
+
+
+def _fast_country_lookup(ip: str) -> str:
+    """Quick single-provider country lookup used only during a global pause.
+    Returns the ISO-3166-1 alpha-2 country code in upper-case, or '' on failure.
+    """
+    try:
+        data = requests.get(
+            f'https://ipinfo.io/{ip}?token={IPINFO_TOKEN}',
+            timeout=4,
+        ).json()
+        return (data.get('country', '') or '').strip().upper()
+    except Exception:
+        pass
+    try:
+        data = requests.get(f'https://ipapi.co/{ip}/json/', timeout=4).json()
+        return (data.get('country_code', '') or '').strip().upper()
+    except Exception:
+        return ''
 
 
 def _claim_pause_state_ref():
@@ -707,10 +736,13 @@ def _consume_claim_session_token(session_token: str):
         return False, "backend_error"
 
 
-def _check_and_increment_ip_cooldown(ip_address: str):
+def _check_and_increment_ip_cooldown(ip_address: str, max_claims: int = None):
     ip_value = str(ip_address or "").strip()
     if not ip_value:
         return True, 0, 0, "ok"
+
+    # Fall back to the global default if no override supplied
+    effective_max_claims = max_claims if max_claims is not None else IP_COOLDOWN_CLAIMS
 
     cooldown_ref = db.collection(IP_COOLDOWN_COLLECTION).document(ip_value)
     tx = db.transaction()
@@ -752,7 +784,7 @@ def _check_and_increment_ip_cooldown(ip_address: str):
             })
             return True, 1, 0, "ok"
 
-        if current_count >= IP_COOLDOWN_CLAIMS:
+        if current_count >= effective_max_claims:
             retry_after = int((window_start + window_delta - now_cmp).total_seconds())
             return False, current_count, max(0, retry_after), "cooldown_exceeded"
 
@@ -896,40 +928,78 @@ def send_token():
 
     try:
         now_ts = time.time()
-        allowed, now_paused, retry_after, pause_until, attempt_count_window, pause_reason = _register_attempt_or_pause(now_ts)
-        if not allowed and pause_reason == 'backend_error':
-            return _error_response(
-                503,
-                'Claim pause check unavailable. Please retry in a moment.',
-                'global_claim_pause_backend_error',
-            )
 
-        if not allowed:
-            if pause_reason == 'pause_triggered':
+        # -------------------------------------------------------
+        # GLOBAL PAUSE CHECK (Option B: ET bypass)
+        # Phase 1 – read-only: is the system currently paused?
+        # -------------------------------------------------------
+        pre_paused, pre_retry_after, pre_pause_until, pre_attempts = _get_pause_state(now_ts)
+
+        if pre_paused and CLAIM_PAUSE_BYPASS_COUNTRIES:
+            # Phase 2 – only during a pause: cheap geo-lookup to check for exempt country
+            early_country = _fast_country_lookup(client_ip)
+            if early_country in CLAIM_PAUSE_BYPASS_COUNTRIES:
+                # ET (or other exempt country): skip the pause gate entirely.
+                # Don't call _register_attempt_or_pause so ET traffic doesn't
+                # inflate the abuse counter.
                 _claim_log(
-                    'claim_pause_triggered',
-                    status_code=429,
-                    reason='global_claim_pause_triggered_at_ingress',
-                    pause_until_unix=pause_until,
+                    'claim_pause_bypass',
+                    status_code=200,
+                    ip=str(client_ip),
+                    early_country=early_country,
+                    pause_until_unix=pre_pause_until,
+                    reason='country_exempt_from_global_pause',
+                )
+            else:
+                # Non-exempt country hitting a live pause: block immediately.
+                return _error_response(
+                    429,
+                    CLAIM_PAUSE_MESSAGE,
+                    'global_claim_pause_active',
+                    retry_after_header=pre_retry_after,
+                    retry_after_seconds=pre_retry_after,
+                    pause_until_unix=pre_pause_until,
+                    attempts_in_window=pre_attempts,
+                    pause_threshold=CLAIM_PAUSE_THRESHOLD,
+                    pause_window_minutes=CLAIM_PAUSE_WINDOW_MINUTES,
+                    pause_duration_minutes=CLAIM_PAUSE_DURATION_MINUTES,
+                )
+        elif not pre_paused:
+            # System is not paused: register this attempt and check whether
+            # it trips the threshold (original behaviour).
+            allowed, now_paused, retry_after, pause_until, attempt_count_window, pause_reason = _register_attempt_or_pause(now_ts)
+            if not allowed and pause_reason == 'backend_error':
+                return _error_response(
+                    503,
+                    'Claim pause check unavailable. Please retry in a moment.',
+                    'global_claim_pause_backend_error',
+                )
+            if not allowed:
+                if pause_reason == 'pause_triggered':
+                    _claim_log(
+                        'claim_pause_triggered',
+                        status_code=429,
+                        reason='global_claim_pause_triggered_at_ingress',
+                        pause_until_unix=pause_until,
+                        retry_after_seconds=retry_after,
+                        attempts_in_window=attempt_count_window,
+                        pause_threshold=CLAIM_PAUSE_THRESHOLD,
+                        pause_window_minutes=CLAIM_PAUSE_WINDOW_MINUTES,
+                        pause_duration_minutes=CLAIM_PAUSE_DURATION_MINUTES,
+                        is_paused=now_paused,
+                    )
+                return _error_response(
+                    429,
+                    CLAIM_PAUSE_MESSAGE,
+                    'global_claim_pause_active',
+                    retry_after_header=retry_after,
                     retry_after_seconds=retry_after,
+                    pause_until_unix=pause_until,
                     attempts_in_window=attempt_count_window,
                     pause_threshold=CLAIM_PAUSE_THRESHOLD,
                     pause_window_minutes=CLAIM_PAUSE_WINDOW_MINUTES,
                     pause_duration_minutes=CLAIM_PAUSE_DURATION_MINUTES,
-                    is_paused=now_paused,
                 )
-            return _error_response(
-                429,
-                CLAIM_PAUSE_MESSAGE,
-                'global_claim_pause_active',
-                retry_after_header=retry_after,
-                retry_after_seconds=retry_after,
-                pause_until_unix=pause_until,
-                attempts_in_window=attempt_count_window,
-                pause_threshold=CLAIM_PAUSE_THRESHOLD,
-                pause_window_minutes=CLAIM_PAUSE_WINDOW_MINUTES,
-                pause_duration_minutes=CLAIM_PAUSE_DURATION_MINUTES,
-            )
 
         # -------------------------
         # EARLY IP BLOCK (cheapest)
@@ -1100,8 +1170,12 @@ def send_token():
         if not country_code:
             return _error_response(400, 'Could not determine your country. Claim blocked for safety.', 'country_lookup_failed')
 
+        # Country-aware limits: ET gets higher thresholds
+        effective_cooldown_claims = ET_IP_COOLDOWN_CLAIMS if country_code == 'ET' else IP_COOLDOWN_CLAIMS
+        effective_daily_limit = ET_IP_DAILY_CLAIM_LIMIT if country_code == 'ET' else IP_DAILY_CLAIM_LIMIT
+
         if ENABLE_IP_COOLDOWN and IP_COOLDOWN_CLAIMS > 0 and IP_COOLDOWN_MINUTES > 0:
-            cooldown_ok, current_window_count, retry_after_seconds, cooldown_reason = _check_and_increment_ip_cooldown(str(user_ip))
+            cooldown_ok, current_window_count, retry_after_seconds, cooldown_reason = _check_and_increment_ip_cooldown(str(user_ip), max_claims=effective_cooldown_claims)
             if not cooldown_ok:
                 if cooldown_reason == "backend_error":
                     return _error_response(
@@ -1115,7 +1189,7 @@ def send_token():
                     429,
                     f'Too many claim attempts from your IP. Try again in {retry_after_seconds} seconds.',
                     'ip_cooldown_exceeded',
-                    ip_cooldown_claims=IP_COOLDOWN_CLAIMS,
+                    ip_cooldown_claims=effective_cooldown_claims,
                     ip_cooldown_minutes=IP_COOLDOWN_MINUTES,
                     retry_after_seconds=retry_after_seconds,
                     current_window_count=int(current_window_count or 0),
@@ -1124,8 +1198,8 @@ def send_token():
         today_str = date.today().isoformat()
         ip_claims_ref = db.collection('ip_claims').document(f"{user_ip}_{today_str}")
         ip_claim_doc = ip_claims_ref.get()
-        if ip_claim_doc.exists and ip_claim_doc.to_dict().get('count', 0) >= 15:
-            return _error_response(429, 'Daily claim limit reached for your IP', 'ip_daily_limit_reached', daily_limit=15)
+        if ip_claim_doc.exists and ip_claim_doc.to_dict().get('count', 0) >= effective_daily_limit:
+            return _error_response(429, 'Daily claim limit reached for your IP', 'ip_daily_limit_reached', daily_limit=effective_daily_limit)
 
         amount_tokens = 75000 if country_code == 'ET' else 10000
         amount_scaled = int(amount_tokens * (10 ** TOKEN_DECIMALS))
